@@ -76,3 +76,15 @@ CREATE TABLE IF NOT EXISTS hauler_profiles (
 );
 
 CREATE INDEX IF NOT EXISTS idx_hauler_profiles_status ON hauler_profiles(status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS verified_phones (
+  user_id TEXT PRIMARY KEY,
+  phone TEXT NOT NULL UNIQUE,
+  verified_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS sms_rate_limits (
+  phone TEXT PRIMARY KEY,
+  last_sent_at TEXT NOT NULL
+);

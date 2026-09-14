@@ -1,4 +1,4 @@
-import app from "./ops";
+import app from "./pricing";
 
 function cookieValue(request: Request, name: string): string | null {
   const cookies = request.headers.get("Cookie") || "";

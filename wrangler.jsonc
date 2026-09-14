@@ -5,5 +5,12 @@
   "compatibility_date": "2026-09-14",
   "observability": {
     "enabled": true
-  }
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "water-on-call-db",
+      "database_id": "03181c75-725e-469d-ab04-e7ecba604568"
+    }
+  ]
 }

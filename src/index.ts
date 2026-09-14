@@ -4,6 +4,9 @@ const ADMIN_EMAIL = "admin@wateroncall.ca";
 interface Env {
   DB: D1Database;
   RESEND_API_KEY: string;
+  TWILIO_VERIFY_SERVICE_SID: string;
+  TWILIO_API_KEY_SID: string;
+  TWILIO_API_KEY_SECRET: string;
 }
 
 interface LoginCodeRow {
@@ -25,36 +28,37 @@ const APP_SCRIPT = [
   '  const codeForm = document.getElementById("code-form");',
   '  const emailInput = document.getElementById("email");',
   '  const codeInput = document.getElementById("code");',
+  '  const codeLabel = document.getElementById("code-label");',
+  '  const emailButton = document.getElementById("email-request");',
+  '  const smsButton = document.getElementById("sms-request");',
   '  const status = document.getElementById("status");',
   '  const requestedNext = new URLSearchParams(window.location.search).get("next");',
+  '  let channel = "email";',
   '  const show = (message, isError = false) => { status.textContent = message; status.hidden = false; status.style.color = isError ? "#a32121" : "#08764b"; };',
-  '  const setBusy = (form, busy) => { const button = form.querySelector("button"); button.disabled = busy; button.textContent = busy ? "Please wait…" : button.dataset.label; };',
-  '  emailForm.addEventListener("submit", async (event) => {',
-  '    event.preventDefault();',
-  '    setBusy(emailForm, true);',
-  '    status.hidden = true;',
+  '  const requestBusy = (busy, selected) => { emailButton.disabled = busy; smsButton.disabled = busy; if (!busy) { emailButton.textContent = emailButton.dataset.label; smsButton.textContent = smsButton.dataset.label; } else { selected.textContent = "Please wait…"; } };',
+  '  const verifyBusy = (busy) => { const button = codeForm.querySelector("button"); button.disabled = busy; button.textContent = busy ? "Please wait…" : button.dataset.label; };',
+  '  async function requestCode(nextChannel) {',
+  '    channel = nextChannel; requestBusy(true, nextChannel === "sms" ? smsButton : emailButton); status.hidden = true;',
   '    try {',
-  '      const response = await fetch("/api/auth/request", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: emailInput.value }) });',
-  '      const data = await response.json();',
-  '      if (!response.ok) throw new Error(data.error || "Unable to send the code.");',
-  '      codeForm.hidden = false;',
-  '      codeInput.focus();',
-  '      show("We sent a 6-digit sign-in code to " + emailInput.value.trim() + ". It expires in 10 minutes.");',
-  '    } catch (error) { show(error.message || "Unable to send the code.", true); }',
-  '    finally { setBusy(emailForm, false); }',
-  '  });',
+  '      const endpoint = nextChannel === "sms" ? "/api/auth/sms/request" : "/api/auth/request";',
+  '      const response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: emailInput.value }) });',
+  '      const data = await response.json(); if (!response.ok) throw new Error(data.error || "Unable to send the code.");',
+  '      codeForm.hidden = false; codeInput.value = ""; codeInput.focus();',
+  '      codeLabel.textContent = nextChannel === "sms" ? "6-digit text-message code" : "6-digit email code";',
+  '      show(nextChannel === "sms" ? "If this account has a verified mobile number, a sign-in code was sent by text. It expires in 10 minutes." : "We sent a 6-digit sign-in code to " + emailInput.value.trim() + ". It expires in 10 minutes.");',
+  '    } catch (error) { show(error.message || "Unable to send the code.", true); } finally { requestBusy(false, nextChannel === "sms" ? smsButton : emailButton); }',
+  '  }',
+  '  emailForm.addEventListener("submit", (event) => { event.preventDefault(); requestCode("email"); });',
+  '  smsButton.addEventListener("click", () => requestCode("sms"));',
   '  codeForm.addEventListener("submit", async (event) => {',
-  '    event.preventDefault();',
-  '    setBusy(codeForm, true);',
+  '    event.preventDefault(); verifyBusy(true);',
   '    try {',
-  '      const response = await fetch("/api/auth/verify", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin", body: JSON.stringify({ email: emailInput.value, code: codeInput.value }) });',
-  '      const data = await response.json();',
-  '      if (!response.ok) throw new Error(data.error || "That code could not be verified.");',
-  '      emailForm.hidden = true;',
-  '      codeForm.hidden = true;',
+  '      const endpoint = channel === "sms" ? "/api/auth/sms/verify" : "/api/auth/verify";',
+  '      const response = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin", body: JSON.stringify({ email: emailInput.value, code: codeInput.value }) });',
+  '      const data = await response.json(); if (!response.ok) throw new Error(data.error || "That code could not be verified.");',
+  '      emailForm.hidden = true; codeForm.hidden = true;',
   '      window.location.href = data.user.role === "admin" ? "/admin" : data.user.role === "hauler" ? "/hauler" : requestedNext === "/hauler" ? "/hauler" : "/account";',
-  '    } catch (error) { show(error.message || "That code could not be verified.", true); }',
-  '    finally { setBusy(codeForm, false); }',
+  '    } catch (error) { show(error.message || "That code could not be verified.", true); } finally { verifyBusy(false); }',
   '  });',
   '});'
 ].join("\n");
@@ -73,6 +77,59 @@ function normalizeEmail(value: unknown): string | null {
   const email = String(value ?? "").trim().toLowerCase();
   if (email.length < 5 || email.length > 254 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return null;
   return email;
+}
+
+function normalizeCanadianPhone(value: unknown): string | null {
+  const digits = String(value ?? "").replace(/\D/g, "");
+  if (digits.length === 10) return "+1" + digits;
+  if (digits.length === 11 && digits.startsWith("1")) return "+" + digits;
+  return null;
+}
+
+async function ensurePhoneSchema(env: Env): Promise<void> {
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS verified_phones (user_id TEXT PRIMARY KEY, phone TEXT NOT NULL UNIQUE, verified_at TEXT NOT NULL DEFAULT (datetime('now')), FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)"
+  ).run();
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS sms_rate_limits (phone TEXT PRIMARY KEY, last_sent_at TEXT NOT NULL)"
+  ).run();
+}
+
+async function twilioVerifyRequest(env: Env, path: string, fields: Record<string, string>): Promise<{ ok: boolean; status?: string }> {
+  try {
+    const body = new URLSearchParams(fields);
+    const response = await fetch(
+      "https://verify.twilio.com/v2/Services/" + encodeURIComponent(env.TWILIO_VERIFY_SERVICE_SID) + path,
+      {
+        method: "POST",
+        headers: {
+          "Authorization": "Basic " + btoa(env.TWILIO_API_KEY_SID + ":" + env.TWILIO_API_KEY_SECRET),
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: body.toString(),
+      }
+    );
+    const data = await response.json() as { status?: string; message?: string };
+    if (!response.ok) console.error("Twilio Verify rejected request", response.status, data.message || "");
+    return { ok: response.ok, status: data.status };
+  } catch (error) {
+    console.error("Twilio Verify request failed", error);
+    return { ok: false };
+  }
+}
+
+async function sendSmsCode(env: Env, phone: string): Promise<"sent" | "limited" | "failed"> {
+  await ensurePhoneSchema(env);
+  const recent = await env.DB.prepare(
+    "SELECT phone FROM sms_rate_limits WHERE phone = ? AND datetime(last_sent_at) > datetime('now', '-30 seconds')"
+  ).bind(phone).first();
+  if (recent) return "limited";
+  const result = await twilioVerifyRequest(env, "/Verifications", { To: phone, Channel: "sms" });
+  if (!result.ok) return "failed";
+  await env.DB.prepare(
+    "INSERT INTO sms_rate_limits (phone, last_sent_at) VALUES (?, datetime('now')) ON CONFLICT(phone) DO UPDATE SET last_sent_at=datetime('now')"
+  ).bind(phone).run();
+  return "sent";
 }
 
 async function readBody(request: Request): Promise<Record<string, unknown> | null> {
@@ -234,6 +291,85 @@ async function verifyLoginCode(request: Request, env: Env): Promise<Response> {
   );
 }
 
+async function requestSmsLoginCode(request: Request, env: Env): Promise<Response> {
+  if (!sameOrigin(request)) return json({ error: "Request not allowed." }, 403);
+  const body = await readBody(request);
+  const email = normalizeEmail(body?.email);
+  if (!email) return json({ error: "Enter a valid email address." }, 400);
+  await ensurePhoneSchema(env);
+  const row = await env.DB.prepare(
+    "SELECT verified_phones.phone FROM verified_phones JOIN users ON users.id=verified_phones.user_id WHERE users.email=? LIMIT 1"
+  ).bind(email).first<{ phone: string }>();
+  if (!row) return json({ ok: true });
+  const sent = await sendSmsCode(env, row.phone);
+  if (sent === "limited") return json({ error: "Please wait 30 seconds before requesting another text." }, 429);
+  if (sent === "failed") return json({ error: "We could not send the text right now. Use email or try again shortly." }, 503);
+  return json({ ok: true });
+}
+
+async function verifySmsLoginCode(request: Request, env: Env): Promise<Response> {
+  if (!sameOrigin(request)) return json({ error: "Request not allowed." }, 403);
+  const body = await readBody(request);
+  const email = normalizeEmail(body?.email);
+  const code = String(body?.code ?? "").replace(/\D/g, "");
+  if (!email || code.length !== 6) return json({ error: "Enter the 6-digit code from the text message." }, 400);
+  await ensurePhoneSchema(env);
+  const user = await env.DB.prepare(
+    "SELECT users.id, users.email, users.role, users.full_name, verified_phones.phone FROM users JOIN verified_phones ON verified_phones.user_id=users.id WHERE users.email=? LIMIT 1"
+  ).bind(email).first<UserRow & { phone: string }>();
+  if (!user) return json({ error: "That code is invalid or has expired. Use email sign-in or request a new text." }, 401);
+  const checked = await twilioVerifyRequest(env, "/VerificationCheck", { To: user.phone, Code: code });
+  if (!checked.ok || checked.status !== "approved") return json({ error: "That code is incorrect or has expired. Please try again." }, 401);
+
+  const role = user.email === ADMIN_EMAIL ? "admin" : user.role;
+  if (role !== user.role) await env.DB.prepare("UPDATE users SET role=?, updated_at=datetime('now') WHERE id=?").bind(role, user.id).run();
+  const token = secureToken();
+  const tokenHash = await sha256(token);
+  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+  await env.DB.prepare(
+    "INSERT INTO sessions (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)"
+  ).bind(crypto.randomUUID(), user.id, tokenHash, expiresAt).run();
+  return json(
+    { ok: true, user: { email: user.email, role, fullName: user.full_name } },
+    200,
+    { "Set-Cookie": "woc_session=" + encodeURIComponent(token) + "; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000" }
+  );
+}
+
+async function requestPhoneVerification(request: Request, env: Env): Promise<Response> {
+  if (!sameOrigin(request)) return json({ error: "Request not allowed." }, 403);
+  const user = await sessionUser(request, env);
+  if (!user) return json({ error: "Please sign in again." }, 401);
+  const phone = normalizeCanadianPhone(user.phone);
+  if (!phone) return json({ error: "Save a valid Canadian mobile number first." }, 400);
+  const sent = await sendSmsCode(env, phone);
+  if (sent === "limited") return json({ error: "Please wait 30 seconds before requesting another text." }, 429);
+  if (sent === "failed") return json({ error: "We could not send the text right now. Please try again shortly." }, 503);
+  return json({ ok: true });
+}
+
+async function confirmPhoneVerification(request: Request, env: Env): Promise<Response> {
+  if (!sameOrigin(request)) return json({ error: "Request not allowed." }, 403);
+  const user = await sessionUser(request, env);
+  if (!user) return json({ error: "Please sign in again." }, 401);
+  const body = await readBody(request);
+  const code = String(body?.code ?? "").replace(/\D/g, "");
+  const phone = normalizeCanadianPhone(user.phone);
+  if (!phone || code.length !== 6) return json({ error: "Enter the 6-digit code from the text message." }, 400);
+  const checked = await twilioVerifyRequest(env, "/VerificationCheck", { To: phone, Code: code });
+  if (!checked.ok || checked.status !== "approved") return json({ error: "That code is incorrect or has expired. Please try again." }, 401);
+  await ensurePhoneSchema(env);
+  try {
+    await env.DB.prepare(
+      "INSERT INTO verified_phones (user_id, phone, verified_at) VALUES (?, ?, datetime('now')) ON CONFLICT(user_id) DO UPDATE SET phone=excluded.phone, verified_at=datetime('now')"
+    ).bind(user.id, phone).run();
+    await env.DB.prepare("UPDATE users SET phone=?, updated_at=datetime('now') WHERE id=?").bind(phone, user.id).run();
+  } catch {
+    return json({ error: "That mobile number is already connected to another account." }, 409);
+  }
+  return json({ ok: true });
+}
+
 async function currentUser(request: Request, env: Env): Promise<Response> {
   const token = cookieValue(request, "woc_session");
   if (!token) return json({ user: null }, 401);
@@ -300,7 +436,7 @@ function page(): Response {
     .card{background:#fff;border:1px solid var(--line);border-radius:24px;padding:34px;box-shadow:0 24px 65px #06325e1a}
     .eyebrow{text-transform:uppercase;letter-spacing:.16em;color:var(--blue);font-size:12px;font-weight:850}.card h2{margin:10px 0 8px;font-size:29px;color:var(--navy)}.small{color:var(--muted);line-height:1.55;margin:0 0 24px}
     label{display:block;font-weight:750;font-size:14px;margin-bottom:8px}input{width:100%;height:52px;border:1px solid #bdd0e1;border-radius:12px;font-size:16px;padding:0 15px;outline:none}input:focus{border-color:var(--blue);box-shadow:0 0 0 4px #0877f91f}
-    button{width:100%;height:52px;margin-top:14px;border:0;border-radius:12px;background:var(--blue);color:#fff;font-size:16px;font-weight:800;cursor:pointer}button:disabled{cursor:not-allowed;opacity:.65}.notice{margin-top:16px;padding:13px 14px;border-radius:11px;background:var(--wash);font-size:13px;color:var(--muted);line-height:1.45}.links{display:flex;justify-content:center;gap:18px;margin-top:21px;font-size:13px}.links a{color:var(--navy)}
+    button{width:100%;height:52px;margin-top:14px;border:0;border-radius:12px;background:var(--blue);color:#fff;font-size:16px;font-weight:800;cursor:pointer}button.secondary{margin-top:10px;background:#eaf4ff;color:var(--navy)}button:disabled{cursor:not-allowed;opacity:.65}.notice{margin-top:16px;padding:13px 14px;border-radius:11px;background:var(--wash);font-size:13px;color:var(--muted);line-height:1.45}.links{display:flex;justify-content:center;gap:18px;margin-top:21px;font-size:13px}.links a{color:var(--navy)}
     @media(max-width:760px){header{padding:0 18px}.secure{display:none}main{grid-template-columns:1fr;gap:36px;padding:42px 18px}.lead{font-size:17px}.card{padding:25px}h1{font-size:47px}}
   </style>
 </head>
@@ -320,14 +456,15 @@ function page(): Response {
     <section class="card">
       <div class="eyebrow">Customer sign in</div>
       <h2>Your Water OnCall account</h2>
-      <p class="small">Enter your email to receive a secure one-time sign-in code. No password required.</p>
+      <p class="small">Enter your email, then choose to receive your secure sign-in code by email or text. Text sign-in becomes available after you verify your mobile number in your account.</p>
       <form id="email-form">
         <label for="email">Email address</label>
         <input id="email" name="email" type="email" autocomplete="email" placeholder="you@example.com" required>
-        <button type="submit" data-label="Send secure code">Send secure code</button>
+        <button id="email-request" type="submit" data-label="Email me a code">Email me a code</button>
+        <button id="sms-request" class="secondary" type="button" data-label="Text me a code">Text me a code</button>
       </form>
       <form id="code-form" hidden>
-        <label for="code">6-digit sign-in code</label>
+        <label id="code-label" for="code">6-digit sign-in code</label>
         <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="000000" required>
         <button type="submit" data-label="Verify and sign in">Verify and sign in</button>
       </form>
@@ -442,6 +579,10 @@ const ACCOUNT_SCRIPT = [
   '      top.append(title, status); item.append(top, summary, hint, expanded); orderList.append(item);',
   '    });',
   '  }',
+  '  const phoneStart = document.getElementById("phone-verify-start");',
+  '  const phoneForm = document.getElementById("phone-verify-form");',
+  '  phoneStart.addEventListener("click", async () => { phoneStart.disabled = true; const original = phoneStart.textContent; phoneStart.textContent = "Sending…"; try { const response = await fetch("/api/phone/request", { method: "POST" }); const data = await response.json(); if (!response.ok) throw new Error(data.error); phoneForm.hidden = false; document.getElementById("phone_code").focus(); show("We sent a 6-digit verification code to your saved mobile number."); } catch (error) { show(error.message || "Unable to send the text.", true); } finally { phoneStart.disabled = false; phoneStart.textContent = original; } });',
+  '  phoneForm.addEventListener("submit", async (event) => { event.preventDefault(); const button = phoneForm.querySelector("button"); button.disabled = true; button.textContent = "Verifying…"; try { const response = await fetch("/api/phone/verify", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: document.getElementById("phone_code").value }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); show("Mobile number verified. You can now choose Text me a code when signing in."); phoneForm.hidden = true; phoneStart.textContent = "Mobile verified for text sign-in"; } catch (error) { show(error.message || "Unable to verify the code.", true); button.disabled = false; button.textContent = "Verify mobile"; } });',
   '  loadOrders();',
   '});'
 ].join("\n");
@@ -456,7 +597,7 @@ function accountJavascript(): Response {
   });
 }
 
-function accountPage(user: AccountUserRow): Response {
+function accountPage(user: AccountUserRow, phoneVerified: boolean): Response {
   const html = [
     '<!doctype html><html lang="en"><head>',
     '<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0877f9">',
@@ -470,7 +611,7 @@ function accountPage(user: AccountUserRow): Response {
     '.message{padding:14px 16px;border-radius:12px;margin:0 0 22px;font-weight:650}.message.success{background:#e4f8ef;color:var(--green)}.message.error{background:#ffebeb;color:var(--red)}',
     '.grid{display:grid;grid-template-columns:.85fr 1.15fr;gap:22px;align-items:start}.stack{display:grid;gap:22px}.card{background:#fff;border:1px solid var(--line);border-radius:19px;padding:25px;box-shadow:0 12px 35px #06325e0d}.card h2{margin:0 0 6px;color:var(--navy);font-size:22px}.intro{margin-bottom:21px;font-size:14px}',
     '.fields{display:grid;grid-template-columns:1fr 1fr;gap:16px}.field.full{grid-column:1/-1}label{display:block;font-size:13px;font-weight:750;margin-bottom:7px}input,select,textarea{width:100%;border:1px solid #bdd0e1;border-radius:11px;background:#fff;color:var(--ink);font:inherit;padding:12px}input,select{height:48px}textarea{min-height:94px;resize:vertical}input:focus,select:focus,textarea:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px #0877f91a}',
-    'button{height:49px;width:100%;border:0;border-radius:11px;background:var(--blue);color:#fff;font-size:15px;font-weight:800;cursor:pointer;margin-top:17px}button:disabled{opacity:.6;cursor:not-allowed}.fine{font-size:12px;margin-top:10px}.order-list{display:grid;gap:11px}.order-item{border:1px solid var(--line);border-radius:12px;padding:14px;cursor:pointer}.order-item:hover,.order-item:focus{border-color:var(--blue);outline:none;box-shadow:0 0 0 3px #0877f914}.order-top{display:flex;justify-content:space-between;gap:10px}.order-item p{font-size:13px;margin-top:5px}.view-hint{display:inline-block;margin-top:8px;color:var(--blue);font-size:12px;font-weight:750}.order-details{border-top:1px solid var(--line);margin-top:12px;padding-top:12px;cursor:default}.order-details div{display:grid;grid-template-columns:125px 1fr;gap:10px;padding:6px 0;font-size:13px}.order-details strong{color:var(--navy)}.order-details span{color:var(--muted);overflow-wrap:anywhere}.repeat-button,.cancel-button{width:auto;height:42px;margin:12px 9px 0 0;padding:0 18px}.repeat-button{background:#eaf4ff;color:var(--navy)}.repeat-button:hover{background:#dbeeff}.cancel-button{background:#fff0f0;color:var(--red);border:1px solid #f2caca}.cancel-button:hover{background:#ffe4e4}.status{background:#eaf4ff;color:var(--navy);border-radius:999px;padding:5px 9px;font-size:11px;font-weight:800;white-space:nowrap}.empty{padding:18px;border:1px dashed #bdd0e1;border-radius:12px;text-align:center;font-size:14px}',
+    'button{height:49px;width:100%;border:0;border-radius:11px;background:var(--blue);color:#fff;font-size:15px;font-weight:800;cursor:pointer;margin-top:17px}button:disabled{opacity:.6;cursor:not-allowed}.fine{font-size:12px;margin-top:10px}.order-list{display:grid;gap:11px}.order-item{border:1px solid var(--line);border-radius:12px;padding:14px;cursor:pointer}.order-item:hover,.order-item:focus{border-color:var(--blue);outline:none;box-shadow:0 0 0 3px #0877f914}.order-top{display:flex;justify-content:space-between;gap:10px}.order-item p{font-size:13px;margin-top:5px}.view-hint{display:inline-block;margin-top:8px;color:var(--blue);font-size:12px;font-weight:750}.order-details{border-top:1px solid var(--line);margin-top:12px;padding-top:12px;cursor:default}.order-details div{display:grid;grid-template-columns:125px 1fr;gap:10px;padding:6px 0;font-size:13px}.order-details strong{color:var(--navy)}.order-details span{color:var(--muted);overflow-wrap:anywhere}.repeat-button,.cancel-button{width:auto;height:42px;margin:12px 9px 0 0;padding:0 18px}.repeat-button{background:#eaf4ff;color:var(--navy)}.repeat-button:hover{background:#dbeeff}.cancel-button{background:#fff0f0;color:var(--red);border:1px solid #f2caca}.cancel-button:hover{background:#ffe4e4}.phone-verification{border-top:1px solid var(--line);margin-top:20px;padding-top:18px}.phone-verification p{font-size:13px}.phone-verification button{background:#eaf4ff;color:var(--navy);margin-top:12px}.phone-verification form{margin-top:12px}.phone-verification form button{background:var(--blue);color:#fff}.cancel-button:hover{background:#ffe4e4}.status{background:#eaf4ff;color:var(--navy);border-radius:999px;padding:5px 9px;font-size:11px;font-weight:800;white-space:nowrap}.empty{padding:18px;border:1px dashed #bdd0e1;border-radius:12px;text-align:center;font-size:14px}',
     '@media(max-width:800px){.grid{grid-template-columns:1fr}.welcome{align-items:start}.account span{display:none}}@media(max-width:560px){header{padding:14px 16px}main{padding:28px 15px 55px}.fields{grid-template-columns:1fr}.field.full{grid-column:auto}.card{padding:20px}.order-top{align-items:start;flex-direction:column}}',
     '</style></head><body>',
     '<header><div class="brand"><span>Water</span> OnCall</div><div class="account"><a href="/hauler" class="hauler-link">Hauler application</a><span>' + escapeHtml(user.email) + '</span><button id="logout" class="link-button" type="button">Sign out</button></div></header>',
@@ -480,7 +621,7 @@ function accountPage(user: AccountUserRow): Response {
     '<section class="card"><h2>Contact details</h2><p class="intro">We use this information to coordinate your delivery.</p>',
     '<form id="profile-form"><div class="fields"><div class="field full"><label for="full_name">Full name</label><input id="full_name" name="full_name" autocomplete="name" maxlength="100" value="' + escapeHtml(user.full_name) + '" required></div>',
     '<div class="field"><label for="phone">Mobile phone</label><input id="phone" name="phone" type="tel" autocomplete="tel" maxlength="30" value="' + escapeHtml(user.phone) + '" required></div>',
-    '<div class="field"><label>Email address</label><input value="' + escapeHtml(user.email) + '" disabled></div></div><button type="submit" data-label="Save contact details">Save contact details</button></form></section>',
+    '<div class="field"><label>Email address</label><input value="' + escapeHtml(user.email) + '" disabled></div></div><button type="submit" data-label="Save contact details">Save contact details</button></form><div class="phone-verification"><p>Verify your saved mobile number once to enable faster text-message sign-in.</p><button id="phone-verify-start" type="button">' + (phoneVerified ? 'Reverify or change mobile' : 'Verify mobile for text sign-in') + '</button><form id="phone-verify-form" hidden><label for="phone_code">6-digit text-message code</label><input id="phone_code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="000000" required><button type="submit">Verify mobile</button></form></div></section>',
     '<section class="card"><h2>My requests</h2><p class="intro">Your newest delivery requests appear first.</p><div id="empty-orders" class="empty">No delivery requests yet.</div><div id="order-list" class="order-list"></div></section>',
     '</div><section class="card"><div class="eyebrow">New delivery</div><h2>Request bulk water</h2><p class="intro">Tell us what you need. Pricing and the delivery window will be confirmed before dispatch.</p>',
     '<form id="order-form"><div class="fields">',
@@ -760,13 +901,15 @@ async function saveProfile(request: Request, env: Env): Promise<Response> {
   if (!user) return json({ error: "Please sign in again." }, 401);
   const body = await readBody(request);
   const fullName = textField(body?.full_name, 100);
-  const phone = textField(body?.phone, 30);
-  if (!fullName || !phone || phone.replace(/\D/g, "").length < 7) {
-    return json({ error: "Enter your full name and a valid phone number." }, 400);
+  const phone = normalizeCanadianPhone(body?.phone);
+  if (!fullName || !phone) {
+    return json({ error: "Enter your full name and a valid Canadian mobile number." }, 400);
   }
+  await ensurePhoneSchema(env);
   await env.DB.prepare(
     "UPDATE users SET full_name = ?, phone = ?, updated_at = datetime('now') WHERE id = ?"
   ).bind(fullName, phone, user.id).run();
+  await env.DB.prepare("DELETE FROM verified_phones WHERE user_id=? AND phone<>?").bind(user.id, phone).run();
   return json({ ok: true });
 }
 
@@ -964,7 +1107,7 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/api/health") {
-      return json({ ok: true, service: "water-on-call-app", database: Boolean(env.DB), email: Boolean(env.RESEND_API_KEY) });
+      return json({ ok: true, service: "water-on-call-app", database: Boolean(env.DB), email: Boolean(env.RESEND_API_KEY), sms: Boolean(env.TWILIO_VERIFY_SERVICE_SID && env.TWILIO_API_KEY_SID && env.TWILIO_API_KEY_SECRET) });
     }
     if (url.pathname === "/app.js" && request.method === "GET") return javascript();
     if (url.pathname === "/account.js" && request.method === "GET") return accountJavascript();
@@ -973,6 +1116,10 @@ export default {
     if (url.pathname === "/admin-haulers.js" && request.method === "GET") return adminHaulersJavascript();
     if (url.pathname === "/api/auth/request" && request.method === "POST") return requestLoginCode(request, env);
     if (url.pathname === "/api/auth/verify" && request.method === "POST") return verifyLoginCode(request, env);
+    if (url.pathname === "/api/auth/sms/request" && request.method === "POST") return requestSmsLoginCode(request, env);
+    if (url.pathname === "/api/auth/sms/verify" && request.method === "POST") return verifySmsLoginCode(request, env);
+    if (url.pathname === "/api/phone/request" && request.method === "POST") return requestPhoneVerification(request, env);
+    if (url.pathname === "/api/phone/verify" && request.method === "POST") return confirmPhoneVerification(request, env);
     if (url.pathname === "/api/auth/logout" && request.method === "POST") return logout(request, env);
     if (url.pathname === "/api/me" && request.method === "GET") return currentUser(request, env);
     if (url.pathname === "/api/profile" && request.method === "POST") return saveProfile(request, env);
@@ -1011,7 +1158,10 @@ export default {
 
     if (url.pathname === "/account") {
       const user = await sessionUser(request, env);
-      return user ? accountPage(user) : Response.redirect(url.origin + "/login", 302);
+      if (!user) return Response.redirect(url.origin + "/login", 302);
+      await ensurePhoneSchema(env);
+      const verified = await env.DB.prepare("SELECT user_id FROM verified_phones WHERE user_id=? LIMIT 1").bind(user.id).first();
+      return accountPage(user, Boolean(verified));
     }
 
     if (url.pathname === "/" || url.pathname === "/login") {

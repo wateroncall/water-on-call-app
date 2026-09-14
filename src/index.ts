@@ -495,7 +495,7 @@ const ADMIN_SCRIPT = [
   '      const card = document.createElement("article"); card.className = "admin-order";',
   '      const head = document.createElement("div"); head.className = "admin-head"; const title = document.createElement("div"); const name = document.createElement("h2"); name.textContent = label(order.order_type) + " · " + Number(order.gallons).toLocaleString() + " gallons"; const meta = document.createElement("p"); meta.textContent = "Requested " + new Date(order.created_at + "Z").toLocaleString(); title.append(name, meta);',
   '      const select = document.createElement("select"); select.setAttribute("aria-label", "Order status"); ["requested","offered","accepted","assigned","en_route","delivered","cancelled"].forEach((status) => { const option = document.createElement("option"); option.value = status; option.textContent = label(status); option.selected = status === order.status; select.append(option); }); select.dataset.previous = order.status;',
-  '      select.addEventListener("change", async () => { const previous = select.dataset.previous; select.disabled = true; try { const response = await fetch("/api/admin/orders/" + encodeURIComponent(order.id), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: select.value }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); select.dataset.previous = select.value; show("Order status updated to " + label(select.value) + "."); } catch (error) { select.value = previous; show(error.message || "Unable to update status.", true); } finally { select.disabled = false; } });',
+  '      select.addEventListener("change", async () => { const previous = select.dataset.previous; select.disabled = true; try { const response = await fetch("/api/admin/orders/" + encodeURIComponent(order.id), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: select.value }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); select.dataset.previous = select.value; if (data.unchanged) show("The order was already " + label(select.value) + ". No email was sent."); else if (data.emailSent) show("Order status updated to " + label(select.value) + " and the customer was notified."); else show("Order status updated, but the customer email could not be sent.", true); } catch (error) { select.value = previous; show(error.message || "Unable to update status.", true); } finally { select.disabled = false; } });',
   '      head.append(title, select); card.append(head);',
   '      const details = document.createElement("div"); details.className = "admin-details"; const address = [order.address_line1, order.address_line2, order.city, order.province, order.postal_code].filter(Boolean).join(", "); [["Customer", order.full_name],["Email", order.email],["Phone", order.phone],["Delivery timing", label(order.delivery_timing)],["Preferred date", order.requested_date],["Address", address],["Hose distance", order.hose_distance_ft + " ft"],["Notes", order.delivery_notes || "No notes provided."],["Request ID", order.id]].forEach(([key,value]) => details.append(line(key,value))); card.append(details); list.append(card);',
   '    });',
@@ -539,11 +539,44 @@ async function updateAdminOrder(request: Request, env: Env, orderId: string): Pr
   const status = String(body?.status ?? "");
   const allowed = ["requested", "offered", "accepted", "assigned", "en_route", "delivered", "cancelled"];
   if (!allowed.includes(status)) return json({ error: "Choose a valid order status." }, 400);
-  const result = await env.DB.prepare(
+  const order = await env.DB.prepare(
+    "SELECT orders.id, orders.status, orders.order_type, orders.gallons, orders.city, users.email, users.full_name FROM orders JOIN users ON users.id = orders.customer_id WHERE orders.id = ? LIMIT 1"
+  ).bind(orderId).first<{ id: string; status: string; order_type: string; gallons: number; city: string; email: string; full_name: string | null }>();
+  if (!order) return json({ error: "Order not found." }, 404);
+  if (order.status === status) return json({ ok: true, unchanged: true, emailSent: false, order: { id: orderId, status } });
+
+  await env.DB.prepare(
     "UPDATE orders SET status = ?, updated_at = datetime('now') WHERE id = ?"
   ).bind(status, orderId).run();
-  if (!result.meta.changes) return json({ error: "Order not found." }, 404);
-  return json({ ok: true, order: { id: orderId, status } });
+
+  const statusText = readable(status);
+  const statusMessages: Record<string, string> = {
+    requested: "Your delivery request is waiting for review.",
+    offered: "A delivery option is available for your request.",
+    accepted: "Your delivery request has been accepted.",
+    assigned: "A hauler has been assigned to your delivery.",
+    en_route: "Your water delivery is now en route.",
+    delivered: "Your water delivery has been marked delivered.",
+    cancelled: "Your delivery request has been cancelled.",
+  };
+  const emailSent = await sendOrderEmail(
+    env,
+    order.email,
+    "Water OnCall order update — " + statusText,
+    [
+      "Hello " + (order.full_name || "there") + ",",
+      "",
+      statusMessages[status],
+      "",
+      "Order: " + readable(order.order_type) + " · " + Number(order.gallons).toLocaleString() + " gallons",
+      "Location: " + order.city,
+      "New status: " + statusText,
+      "Request ID: " + order.id,
+      "",
+      "Sign in to your Water OnCall account to view your request.",
+    ].join("\n")
+  );
+  return json({ ok: true, emailSent, order: { id: orderId, status } });
 }
 
 function textField(value: unknown, maximum: number, required = true): string | null {
@@ -595,7 +628,7 @@ function readable(value: string): string {
   return value.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-async function sendOrderEmail(env: Env, to: string, subject: string, text: string): Promise<void> {
+async function sendOrderEmail(env: Env, to: string, subject: string, text: string): Promise<boolean> {
   try {
     const response = await fetch("https://api.resend.com/emails", {
       method: "POST",
@@ -611,8 +644,10 @@ async function sendOrderEmail(env: Env, to: string, subject: string, text: strin
       }),
     });
     if (!response.ok) console.error("Resend rejected order email", response.status);
+    return response.ok;
   } catch (error) {
     console.error("Unable to send order email", error);
+    return false;
   }
 }
 

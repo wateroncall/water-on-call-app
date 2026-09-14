@@ -50,7 +50,7 @@ const APP_SCRIPT = [
   '      if (!response.ok) throw new Error(data.error || "That code could not be verified.");',
   '      emailForm.hidden = true;',
   '      codeForm.hidden = true;',
-  '      show("Signed in successfully. Your Water OnCall customer account is ready.");',
+  '      window.location.href = "/account";',
   '    } catch (error) { show(error.message || "That code could not be verified.", true); }',
   '    finally { setBusy(codeForm, false); }',
   '  });',
@@ -343,6 +343,208 @@ function page(): Response {
   });
 }
 
+
+interface AccountUserRow extends UserRow {
+  phone: string | null;
+}
+
+function escapeHtml(value: string | null): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+async function sessionUser(request: Request, env: Env): Promise<AccountUserRow | null> {
+  const token = cookieValue(request, "woc_session");
+  if (!token) return null;
+  const tokenHash = await sha256(token);
+  return env.DB.prepare(
+    "SELECT users.id, users.email, users.role, users.full_name, users.phone FROM sessions JOIN users ON users.id = sessions.user_id WHERE sessions.token_hash = ? AND datetime(sessions.expires_at) > datetime('now') LIMIT 1"
+  ).bind(tokenHash).first<AccountUserRow>();
+}
+
+const ACCOUNT_SCRIPT = [
+  'document.addEventListener("DOMContentLoaded", () => {',
+  '  const message = document.getElementById("message");',
+  '  const orderList = document.getElementById("order-list");',
+  '  const emptyOrders = document.getElementById("empty-orders");',
+  '  const timing = document.getElementById("delivery_timing");',
+  '  const dateWrap = document.getElementById("date-wrap");',
+  '  const dateInput = document.getElementById("requested_date");',
+  '  const show = (text, error = false) => { message.textContent = text; message.hidden = false; message.className = error ? "message error" : "message success"; window.scrollTo({ top: 0, behavior: "smooth" }); };',
+  '  const busy = (form, state) => { const button = form.querySelector("button[type=submit]"); button.disabled = state; button.textContent = state ? "Please wait…" : button.dataset.label; };',
+  '  const updateDate = () => { const scheduled = timing.value === "scheduled"; dateWrap.hidden = !scheduled; dateInput.required = scheduled; if (!scheduled) dateInput.value = ""; };',
+  '  timing.addEventListener("change", updateDate); updateDate();',
+  '  document.getElementById("profile-form").addEventListener("submit", async (event) => {',
+  '    event.preventDefault(); const form = event.currentTarget; busy(form, true);',
+  '    try { const response = await fetch("/api/profile", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.fromEntries(new FormData(form))) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); show("Contact details saved."); }',
+  '    catch (error) { show(error.message || "Unable to save contact details.", true); } finally { busy(form, false); }',
+  '  });',
+  '  document.getElementById("order-form").addEventListener("submit", async (event) => {',
+  '    event.preventDefault(); const form = event.currentTarget; busy(form, true);',
+  '    try { const response = await fetch("/api/orders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.fromEntries(new FormData(form))) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); show("Delivery request submitted. We will notify you when a hauler accepts it."); form.reset(); updateDate(); await loadOrders(); }',
+  '    catch (error) { show(error.message || "Unable to submit the delivery request.", true); } finally { busy(form, false); }',
+  '  });',
+  '  document.getElementById("logout").addEventListener("click", async () => { await fetch("/api/auth/logout", { method: "POST" }); window.location.href = "/login"; });',
+  '  const label = (value) => String(value || "").replaceAll("_", " ").replace(/\\b\\w/g, (letter) => letter.toUpperCase());',
+  '  async function loadOrders() {',
+  '    const response = await fetch("/api/orders"); if (response.status === 401) { window.location.href = "/login"; return; }',
+  '    const data = await response.json(); orderList.textContent = ""; emptyOrders.hidden = data.orders.length > 0;',
+  '    data.orders.forEach((order) => {',
+  '      const item = document.createElement("article"); item.className = "order-item";',
+  '      const top = document.createElement("div"); top.className = "order-top";',
+  '      const title = document.createElement("strong"); title.textContent = label(order.order_type) + " · " + Number(order.gallons).toLocaleString() + " gallons";',
+  '      const status = document.createElement("span"); status.className = "status"; status.textContent = label(order.status);',
+  '      const details = document.createElement("p"); details.textContent = order.address_line1 + ", " + order.city + " · Requested " + new Date(order.created_at + "Z").toLocaleDateString();',
+  '      top.append(title, status); item.append(top, details); orderList.append(item);',
+  '    });',
+  '  }',
+  '  loadOrders();',
+  '});'
+].join("\n");
+
+function accountJavascript(): Response {
+  return new Response(ACCOUNT_SCRIPT, {
+    headers: {
+      ...securityHeaders,
+      "Content-Type": "text/javascript; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+function accountPage(user: AccountUserRow): Response {
+  const html = [
+    '<!doctype html><html lang="en"><head>',
+    '<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0877f9">',
+    '<title>My Account — Water OnCall</title>',
+    '<style>',
+    ':root{color-scheme:light;--blue:#0877f9;--navy:#06325e;--ink:#13283d;--muted:#61778d;--line:#dce8f3;--wash:#f3f9ff;--green:#08764b;--red:#a32121}',
+    '*{box-sizing:border-box}body{margin:0;background:#f4f9fd;color:var(--ink);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}',
+    'header{background:#fff;border-bottom:1px solid var(--line);padding:16px max(20px,calc((100vw - 1120px)/2));display:flex;justify-content:space-between;align-items:center;gap:18px;position:sticky;top:0;z-index:2}',
+    '.brand{font-size:21px;font-weight:850;color:var(--navy)}.brand span{color:var(--blue)}.account{display:flex;align-items:center;gap:12px;color:var(--muted);font-size:13px}.link-button{width:auto;height:auto;margin:0;padding:9px 13px;background:#eaf4ff;color:var(--navy);font-size:13px}',
+    'main{max-width:1120px;margin:auto;padding:38px 20px 70px}.welcome{display:flex;justify-content:space-between;align-items:end;gap:20px;margin-bottom:28px}.eyebrow{text-transform:uppercase;letter-spacing:.14em;color:var(--blue);font-size:12px;font-weight:850}h1{font-size:clamp(32px,5vw,52px);letter-spacing:-.04em;color:var(--navy);margin:8px 0 4px}p{color:var(--muted);line-height:1.5;margin:0}',
+    '.message{padding:14px 16px;border-radius:12px;margin:0 0 22px;font-weight:650}.message.success{background:#e4f8ef;color:var(--green)}.message.error{background:#ffebeb;color:var(--red)}',
+    '.grid{display:grid;grid-template-columns:.85fr 1.15fr;gap:22px;align-items:start}.stack{display:grid;gap:22px}.card{background:#fff;border:1px solid var(--line);border-radius:19px;padding:25px;box-shadow:0 12px 35px #06325e0d}.card h2{margin:0 0 6px;color:var(--navy);font-size:22px}.intro{margin-bottom:21px;font-size:14px}',
+    '.fields{display:grid;grid-template-columns:1fr 1fr;gap:16px}.field.full{grid-column:1/-1}label{display:block;font-size:13px;font-weight:750;margin-bottom:7px}input,select,textarea{width:100%;border:1px solid #bdd0e1;border-radius:11px;background:#fff;color:var(--ink);font:inherit;padding:12px}input,select{height:48px}textarea{min-height:94px;resize:vertical}input:focus,select:focus,textarea:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px #0877f91a}',
+    'button{height:49px;width:100%;border:0;border-radius:11px;background:var(--blue);color:#fff;font-size:15px;font-weight:800;cursor:pointer;margin-top:17px}button:disabled{opacity:.6;cursor:not-allowed}.fine{font-size:12px;margin-top:10px}.order-list{display:grid;gap:11px}.order-item{border:1px solid var(--line);border-radius:12px;padding:14px}.order-top{display:flex;justify-content:space-between;gap:10px}.order-item p{font-size:13px;margin-top:5px}.status{background:#eaf4ff;color:var(--navy);border-radius:999px;padding:5px 9px;font-size:11px;font-weight:800;white-space:nowrap}.empty{padding:18px;border:1px dashed #bdd0e1;border-radius:12px;text-align:center;font-size:14px}',
+    '@media(max-width:800px){.grid{grid-template-columns:1fr}.welcome{align-items:start}.account span{display:none}}@media(max-width:560px){header{padding:14px 16px}main{padding:28px 15px 55px}.fields{grid-template-columns:1fr}.field.full{grid-column:auto}.card{padding:20px}.order-top{align-items:start;flex-direction:column}}',
+    '</style></head><body>',
+    '<header><div class="brand"><span>Water</span> OnCall</div><div class="account"><span>' + escapeHtml(user.email) + '</span><button id="logout" class="link-button" type="button">Sign out</button></div></header>',
+    '<main><div class="welcome"><div><div class="eyebrow">Customer portal</div><h1>My Water OnCall</h1><p>Request water and follow every delivery in one place.</p></div></div>',
+    '<div id="message" class="message" aria-live="polite" hidden></div>',
+    '<div class="grid"><div class="stack">',
+    '<section class="card"><h2>Contact details</h2><p class="intro">We use this information to coordinate your delivery.</p>',
+    '<form id="profile-form"><div class="fields"><div class="field full"><label for="full_name">Full name</label><input id="full_name" name="full_name" autocomplete="name" maxlength="100" value="' + escapeHtml(user.full_name) + '" required></div>',
+    '<div class="field"><label for="phone">Mobile phone</label><input id="phone" name="phone" type="tel" autocomplete="tel" maxlength="30" value="' + escapeHtml(user.phone) + '" required></div>',
+    '<div class="field"><label>Email address</label><input value="' + escapeHtml(user.email) + '" disabled></div></div><button type="submit" data-label="Save contact details">Save contact details</button></form></section>',
+    '<section class="card"><h2>My requests</h2><p class="intro">Your newest delivery requests appear first.</p><div id="empty-orders" class="empty">No delivery requests yet.</div><div id="order-list" class="order-list"></div></section>',
+    '</div><section class="card"><div class="eyebrow">New delivery</div><h2>Request bulk water</h2><p class="intro">Tell us what you need. Pricing and the delivery window will be confirmed before dispatch.</p>',
+    '<form id="order-form"><div class="fields">',
+    '<div class="field"><label for="order_type">What needs water?</label><select id="order_type" name="order_type" required><option value="cistern">Cistern</option><option value="pool">Pool</option><option value="hot_tub">Hot tub</option><option value="commercial">Commercial or job site</option><option value="other">Other</option></select></div>',
+    '<div class="field"><label for="gallons">Amount required</label><select id="gallons" name="gallons" required><option value="2000">Up to 2,000 gallons</option><option value="2500">2,500 gallons</option><option value="3000">3,000 gallons</option></select></div>',
+    '<div class="field"><label for="delivery_timing">When do you need it?</label><select id="delivery_timing" name="delivery_timing" required><option value="flexible">Next 1–2 days</option><option value="scheduled">Choose a date</option><option value="urgent">Urgent refill</option></select></div>',
+    '<div id="date-wrap" class="field" hidden><label for="requested_date">Preferred date</label><input id="requested_date" name="requested_date" type="date"></div>',
+    '<div class="field full"><label for="address_line1">Delivery address</label><input id="address_line1" name="address_line1" autocomplete="street-address" maxlength="150" required></div>',
+    '<div class="field"><label for="address_line2">Unit or location details</label><input id="address_line2" name="address_line2" maxlength="100" placeholder="Optional"></div>',
+    '<div class="field"><label for="city">City or town</label><input id="city" name="city" autocomplete="address-level2" maxlength="80" required></div>',
+    '<div class="field"><label for="postal_code">Postal code</label><input id="postal_code" name="postal_code" autocomplete="postal-code" maxlength="7" placeholder="L0R 1B0" required></div>',
+    '<div class="field"><label for="hose_distance_ft">Hose distance</label><select id="hose_distance_ft" name="hose_distance_ft"><option value="50">Up to 50 ft included</option><option value="100">Up to 100 ft</option><option value="150">Up to 150 ft</option><option value="200">Up to 200 ft</option><option value="250">More than 200 ft</option></select></div>',
+    '<div class="field full"><label for="delivery_notes">Delivery notes</label><textarea id="delivery_notes" name="delivery_notes" maxlength="1000" placeholder="Cistern location, access instructions, gate or door codes, or anything the driver should know."></textarea></div>',
+    '</div><button type="submit" data-label="Submit delivery request">Submit delivery request</button><p class="fine">Submitting this form requests service; it does not charge your card.</p></form></section></div></main>',
+    '<script src="/account.js" defer></script></body></html>'
+  ].join("");
+
+  return new Response(html, {
+    headers: {
+      ...securityHeaders,
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+function textField(value: unknown, maximum: number, required = true): string | null {
+  const text = String(value ?? "").trim();
+  if ((required && !text) || text.length > maximum) return null;
+  return text;
+}
+
+async function saveProfile(request: Request, env: Env): Promise<Response> {
+  if (!sameOrigin(request)) return json({ error: "Request not allowed." }, 403);
+  const user = await sessionUser(request, env);
+  if (!user) return json({ error: "Please sign in again." }, 401);
+  const body = await readBody(request);
+  const fullName = textField(body?.full_name, 100);
+  const phone = textField(body?.phone, 30);
+  if (!fullName || !phone || phone.replace(/\D/g, "").length < 7) {
+    return json({ error: "Enter your full name and a valid phone number." }, 400);
+  }
+  await env.DB.prepare(
+    "UPDATE users SET full_name = ?, phone = ?, updated_at = datetime('now') WHERE id = ?"
+  ).bind(fullName, phone, user.id).run();
+  return json({ ok: true });
+}
+
+async function listOrders(request: Request, env: Env): Promise<Response> {
+  const user = await sessionUser(request, env);
+  if (!user) return json({ error: "Please sign in again." }, 401);
+  const result = await env.DB.prepare(
+    "SELECT id, status, order_type, delivery_timing, requested_date, gallons, address_line1, city, postal_code, created_at FROM orders WHERE customer_id = ? ORDER BY created_at DESC LIMIT 50"
+  ).bind(user.id).all();
+  return json({ orders: result.results });
+}
+
+async function createOrder(request: Request, env: Env): Promise<Response> {
+  if (!sameOrigin(request)) return json({ error: "Request not allowed." }, 403);
+  const user = await sessionUser(request, env);
+  if (!user) return json({ error: "Please sign in again." }, 401);
+  if (!user.full_name || !user.phone) {
+    return json({ error: "Save your contact name and mobile phone before requesting delivery." }, 400);
+  }
+
+  const body = await readBody(request);
+  if (!body) return json({ error: "The delivery request was incomplete." }, 400);
+  const orderType = String(body.order_type ?? "");
+  const deliveryTiming = String(body.delivery_timing ?? "");
+  const gallons = Number(body.gallons);
+  const requestedDate = textField(body.requested_date, 10, false) || null;
+  const address1 = textField(body.address_line1, 150);
+  const address2 = textField(body.address_line2, 100, false) || null;
+  const city = textField(body.city, 80);
+  const postalCode = String(body.postal_code ?? "").trim().toUpperCase().replace(/\s+/g, "");
+  const hoseDistance = Number(body.hose_distance_ft || 50);
+  const notes = textField(body.delivery_notes, 1000, false) || null;
+
+  if (!["cistern", "pool", "hot_tub", "commercial", "other"].includes(orderType)) {
+    return json({ error: "Choose what needs water." }, 400);
+  }
+  if (!["flexible", "scheduled", "urgent"].includes(deliveryTiming)) {
+    return json({ error: "Choose when you need delivery." }, 400);
+  }
+  if (![2000, 2500, 3000].includes(gallons)) {
+    return json({ error: "Choose a valid water amount." }, 400);
+  }
+  if (deliveryTiming === "scheduled" && !/^\d{4}-\d{2}-\d{2}$/.test(requestedDate ?? "")) {
+    return json({ error: "Choose a preferred delivery date." }, 400);
+  }
+  if (!address1 || !city || !/^[A-Z]\d[A-Z]\d[A-Z]\d$/.test(postalCode)) {
+    return json({ error: "Enter a complete Ontario delivery address and valid postal code." }, 400);
+  }
+  if (!Number.isInteger(hoseDistance) || hoseDistance < 0 || hoseDistance > 1000) {
+    return json({ error: "Choose a valid hose distance." }, 400);
+  }
+
+  const id = crypto.randomUUID();
+  await env.DB.prepare(
+    "INSERT INTO orders (id, customer_id, order_type, delivery_timing, requested_date, gallons, address_line1, address_line2, city, province, postal_code, hose_distance_ft, delivery_notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ON', ?, ?, ?)"
+  ).bind(id, user.id, orderType, deliveryTiming, requestedDate, gallons, address1, address2, city, postalCode, hoseDistance, notes).run();
+  return json({ ok: true, order: { id, status: "requested" } }, 201);
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -351,15 +553,29 @@ export default {
       return json({ ok: true, service: "water-on-call-app", database: Boolean(env.DB), email: Boolean(env.RESEND_API_KEY) });
     }
     if (url.pathname === "/app.js" && request.method === "GET") return javascript();
+    if (url.pathname === "/account.js" && request.method === "GET") return accountJavascript();
     if (url.pathname === "/api/auth/request" && request.method === "POST") return requestLoginCode(request, env);
     if (url.pathname === "/api/auth/verify" && request.method === "POST") return verifyLoginCode(request, env);
     if (url.pathname === "/api/auth/logout" && request.method === "POST") return logout(request, env);
     if (url.pathname === "/api/me" && request.method === "GET") return currentUser(request, env);
+    if (url.pathname === "/api/profile" && request.method === "POST") return saveProfile(request, env);
+    if (url.pathname === "/api/orders" && request.method === "GET") return listOrders(request, env);
+    if (url.pathname === "/api/orders" && request.method === "POST") return createOrder(request, env);
 
     if (request.method !== "GET" && request.method !== "HEAD") {
       return json({ error: "Method not allowed" }, 405);
     }
-    if (url.pathname === "/" || url.pathname === "/login") return page();
+
+    if (url.pathname === "/account") {
+      const user = await sessionUser(request, env);
+      return user ? accountPage(user) : Response.redirect(url.origin + "/login", 302);
+    }
+
+    if (url.pathname === "/" || url.pathname === "/login") {
+      const user = await sessionUser(request, env);
+      return user ? Response.redirect(url.origin + "/account", 302) : page();
+    }
+
     return json({ error: "Not found" }, 404);
   },
 } satisfies ExportedHandler<Env>;

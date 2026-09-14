@@ -26,6 +26,7 @@ const APP_SCRIPT = [
   '  const emailInput = document.getElementById("email");',
   '  const codeInput = document.getElementById("code");',
   '  const status = document.getElementById("status");',
+  '  const requestedNext = new URLSearchParams(window.location.search).get("next");',
   '  const show = (message, isError = false) => { status.textContent = message; status.hidden = false; status.style.color = isError ? "#a32121" : "#08764b"; };',
   '  const setBusy = (form, busy) => { const button = form.querySelector("button"); button.disabled = busy; button.textContent = busy ? "Please wait…" : button.dataset.label; };',
   '  emailForm.addEventListener("submit", async (event) => {',
@@ -51,7 +52,7 @@ const APP_SCRIPT = [
   '      if (!response.ok) throw new Error(data.error || "That code could not be verified.");',
   '      emailForm.hidden = true;',
   '      codeForm.hidden = true;',
-  '      window.location.href = data.user.role === "admin" ? "/admin" : "/account";',
+  '      window.location.href = data.user.role === "admin" ? "/admin" : data.user.role === "hauler" ? "/hauler" : requestedNext === "/hauler" ? "/hauler" : "/account";',
   '    } catch (error) { show(error.message || "That code could not be verified.", true); }',
   '    finally { setBusy(codeForm, false); }',
   '  });',
@@ -331,7 +332,7 @@ function page(): Response {
         <button type="submit" data-label="Verify and sign in">Verify and sign in</button>
       </form>
       <div id="status" class="notice" aria-live="polite" hidden></div>
-      <div class="links"><a href="https://wateroncall.ca">Main website</a><a href="https://wateroncall.ca/privacy">Privacy</a></div>
+      <div class="links"><a href="https://wateroncall.ca">Main website</a><a href="/hauler">Hauler application</a><a href="https://wateroncall.ca/privacy">Privacy</a></div>
     </section>
   </main>
   <script src="/app.js" defer></script>
@@ -350,6 +351,30 @@ function page(): Response {
 
 interface AccountUserRow extends UserRow {
   phone: string | null;
+}
+
+interface HaulerProfileRow {
+  user_id: string;
+  business_name: string;
+  contact_name: string;
+  phone: string;
+  service_areas: string;
+  truck_capacity_gallons: number;
+  truck_count: number;
+  license_number: string | null;
+  insurance_expiry: string | null;
+  application_notes: string | null;
+  status: string;
+  rejection_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+async function ensureHaulerSchema(env: Env): Promise<void> {
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS hauler_profiles (user_id TEXT PRIMARY KEY, business_name TEXT NOT NULL, contact_name TEXT NOT NULL, phone TEXT NOT NULL, service_areas TEXT NOT NULL, truck_capacity_gallons INTEGER NOT NULL, truck_count INTEGER NOT NULL DEFAULT 1, license_number TEXT, insurance_expiry TEXT, application_notes TEXT, status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','suspended')), rejection_reason TEXT, reviewed_at TEXT, reviewed_by TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)"
+  ).run();
+  await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_hauler_profiles_status ON hauler_profiles(status, created_at DESC)").run();
 }
 
 function escapeHtml(value: string | null): string {
@@ -440,7 +465,7 @@ function accountPage(user: AccountUserRow): Response {
     ':root{color-scheme:light;--blue:#0877f9;--navy:#06325e;--ink:#13283d;--muted:#61778d;--line:#dce8f3;--wash:#f3f9ff;--green:#08764b;--red:#a32121}',
     '*{box-sizing:border-box}body{margin:0;background:#f4f9fd;color:var(--ink);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}',
     'header{background:#fff;border-bottom:1px solid var(--line);padding:16px max(20px,calc((100vw - 1120px)/2));display:flex;justify-content:space-between;align-items:center;gap:18px;position:sticky;top:0;z-index:2}',
-    '.brand{font-size:21px;font-weight:850;color:var(--navy)}.brand span{color:var(--blue)}.account{display:flex;align-items:center;gap:12px;color:var(--muted);font-size:13px}.link-button{width:auto;height:auto;margin:0;padding:9px 13px;background:#eaf4ff;color:var(--navy);font-size:13px}',
+    '.brand{font-size:21px;font-weight:850;color:var(--navy)}.brand span{color:var(--blue)}.account{display:flex;align-items:center;gap:12px;color:var(--muted);font-size:13px}.hauler-link{color:var(--navy);font-weight:750}.link-button{width:auto;height:auto;margin:0;padding:9px 13px;background:#eaf4ff;color:var(--navy);font-size:13px}',
     'main{max-width:1120px;margin:auto;padding:38px 20px 70px}.welcome{display:flex;justify-content:space-between;align-items:end;gap:20px;margin-bottom:28px}.eyebrow{text-transform:uppercase;letter-spacing:.14em;color:var(--blue);font-size:12px;font-weight:850}h1{font-size:clamp(32px,5vw,52px);letter-spacing:-.04em;color:var(--navy);margin:8px 0 4px}p{color:var(--muted);line-height:1.5;margin:0}',
     '.message{padding:14px 16px;border-radius:12px;margin:0 0 22px;font-weight:650}.message.success{background:#e4f8ef;color:var(--green)}.message.error{background:#ffebeb;color:var(--red)}',
     '.grid{display:grid;grid-template-columns:.85fr 1.15fr;gap:22px;align-items:start}.stack{display:grid;gap:22px}.card{background:#fff;border:1px solid var(--line);border-radius:19px;padding:25px;box-shadow:0 12px 35px #06325e0d}.card h2{margin:0 0 6px;color:var(--navy);font-size:22px}.intro{margin-bottom:21px;font-size:14px}',
@@ -448,7 +473,7 @@ function accountPage(user: AccountUserRow): Response {
     'button{height:49px;width:100%;border:0;border-radius:11px;background:var(--blue);color:#fff;font-size:15px;font-weight:800;cursor:pointer;margin-top:17px}button:disabled{opacity:.6;cursor:not-allowed}.fine{font-size:12px;margin-top:10px}.order-list{display:grid;gap:11px}.order-item{border:1px solid var(--line);border-radius:12px;padding:14px;cursor:pointer}.order-item:hover,.order-item:focus{border-color:var(--blue);outline:none;box-shadow:0 0 0 3px #0877f914}.order-top{display:flex;justify-content:space-between;gap:10px}.order-item p{font-size:13px;margin-top:5px}.view-hint{display:inline-block;margin-top:8px;color:var(--blue);font-size:12px;font-weight:750}.order-details{border-top:1px solid var(--line);margin-top:12px;padding-top:12px;cursor:default}.order-details div{display:grid;grid-template-columns:125px 1fr;gap:10px;padding:6px 0;font-size:13px}.order-details strong{color:var(--navy)}.order-details span{color:var(--muted);overflow-wrap:anywhere}.repeat-button,.cancel-button{width:auto;height:42px;margin:12px 9px 0 0;padding:0 18px}.repeat-button{background:#eaf4ff;color:var(--navy)}.repeat-button:hover{background:#dbeeff}.cancel-button{background:#fff0f0;color:var(--red);border:1px solid #f2caca}.cancel-button:hover{background:#ffe4e4}.status{background:#eaf4ff;color:var(--navy);border-radius:999px;padding:5px 9px;font-size:11px;font-weight:800;white-space:nowrap}.empty{padding:18px;border:1px dashed #bdd0e1;border-radius:12px;text-align:center;font-size:14px}',
     '@media(max-width:800px){.grid{grid-template-columns:1fr}.welcome{align-items:start}.account span{display:none}}@media(max-width:560px){header{padding:14px 16px}main{padding:28px 15px 55px}.fields{grid-template-columns:1fr}.field.full{grid-column:auto}.card{padding:20px}.order-top{align-items:start;flex-direction:column}}',
     '</style></head><body>',
-    '<header><div class="brand"><span>Water</span> OnCall</div><div class="account"><span>' + escapeHtml(user.email) + '</span><button id="logout" class="link-button" type="button">Sign out</button></div></header>',
+    '<header><div class="brand"><span>Water</span> OnCall</div><div class="account"><a href="/hauler" class="hauler-link">Hauler application</a><span>' + escapeHtml(user.email) + '</span><button id="logout" class="link-button" type="button">Sign out</button></div></header>',
     '<main><div class="welcome"><div><div class="eyebrow">Customer portal</div><h1>My Water OnCall</h1><p>Request water and follow every delivery in one place.</p></div></div>',
     '<div id="message" class="message" aria-live="polite" hidden></div>',
     '<div class="grid"><div class="stack">',
@@ -483,6 +508,149 @@ function accountPage(user: AccountUserRow): Response {
 }
 
 
+
+const HAULER_SCRIPT = [
+  'document.addEventListener("DOMContentLoaded", () => {',
+  '  const form = document.getElementById("hauler-form"); const message = document.getElementById("hauler-message");',
+  '  const show = (text, error = false) => { message.textContent = text; message.hidden = false; message.className = error ? "message error" : "message success"; window.scrollTo({ top: 0, behavior: "smooth" }); };',
+  '  if (form) form.addEventListener("submit", async (event) => { event.preventDefault(); const button = form.querySelector("button[type=submit]"); button.disabled = true; button.textContent = "Submitting…"; try { const response = await fetch("/api/hauler/application", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.fromEntries(new FormData(form))) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); show("Application submitted for administrator approval."); setTimeout(() => window.location.reload(), 900); } catch (error) { show(error.message || "Unable to submit the application.", true); button.disabled = false; button.textContent = button.dataset.label; } });',
+  '  document.getElementById("hauler-logout").addEventListener("click", async () => { await fetch("/api/auth/logout", { method: "POST" }); window.location.href = "/login?next=/hauler"; });',
+  '});'
+].join("\n");
+
+function haulerJavascript(): Response {
+  return new Response(HAULER_SCRIPT, { headers: { ...securityHeaders, "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store" } });
+}
+
+function haulerPage(user: AccountUserRow, profile: HaulerProfileRow | null): Response {
+  const status = profile?.status ?? "not_submitted";
+  const statusTitle = status === "approved" ? "Approved" : status === "pending" ? "Pending administrator review" : status === "rejected" ? "Changes required" : "Start your application";
+  const statusText = status === "approved"
+    ? "Your company is approved. Available delivery requests will appear here when the dispatch workflow is enabled."
+    : status === "pending"
+      ? "Water OnCall is reviewing your application. You will receive an email when a decision is made."
+      : status === "rejected"
+        ? (profile?.rejection_reason || "Review the application and submit updated information.")
+        : "Tell us about your delivery business. No jobs are available until Water OnCall approves the application.";
+  const showForm = !profile || status === "rejected";
+  const form = showForm ? [
+    '<section class="card"><h2>' + (profile ? 'Update application' : 'Hauler application') + '</h2><p class="intro">All haulers must be reviewed and approved before accessing delivery requests.</p><form id="hauler-form"><div class="fields">',
+    '<div class="field full"><label for="business_name">Business name</label><input id="business_name" name="business_name" maxlength="120" value="' + escapeHtml(profile?.business_name ?? "") + '" required></div>',
+    '<div class="field"><label for="contact_name">Primary contact</label><input id="contact_name" name="contact_name" maxlength="100" value="' + escapeHtml(profile?.contact_name ?? user.full_name ?? "") + '" required></div>',
+    '<div class="field"><label for="phone">Mobile phone</label><input id="phone" name="phone" type="tel" maxlength="30" value="' + escapeHtml(profile?.phone ?? user.phone ?? "") + '" required></div>',
+    '<div class="field full"><label for="service_areas">Service areas</label><input id="service_areas" name="service_areas" maxlength="300" placeholder="Cities, towns, counties, or postal-code areas" value="' + escapeHtml(profile?.service_areas ?? "") + '" required></div>',
+    '<div class="field"><label for="truck_capacity_gallons">Truck capacity</label><select id="truck_capacity_gallons" name="truck_capacity_gallons" required><option value="2000">2,000 gallons</option><option value="2500">2,500 gallons</option><option value="3000">3,000 gallons</option></select></div>',
+    '<div class="field"><label for="truck_count">Number of trucks</label><input id="truck_count" name="truck_count" type="number" min="1" max="100" value="' + escapeHtml(String(profile?.truck_count ?? 1)) + '" required></div>',
+    '<div class="field"><label for="license_number">Business or operating licence</label><input id="license_number" name="license_number" maxlength="100" value="' + escapeHtml(profile?.license_number ?? "") + '" placeholder="Optional during testing"></div>',
+    '<div class="field"><label for="insurance_expiry">Insurance expiry</label><input id="insurance_expiry" name="insurance_expiry" type="date" value="' + escapeHtml(profile?.insurance_expiry ?? "") + '"></div>',
+    '<div class="field full"><label for="application_notes">Additional information</label><textarea id="application_notes" name="application_notes" maxlength="1000" placeholder="Water source, equipment, availability, or anything Water OnCall should know.">' + escapeHtml(profile?.application_notes ?? "") + '</textarea></div>',
+    '</div><button type="submit" data-label="Submit for approval">Submit for approval</button></form></section>'
+  ].join("") : [
+    '<section class="card"><h2>Application details</h2><div class="details">',
+    '<div><strong>Business</strong><span>' + escapeHtml(profile?.business_name ?? "") + '</span></div>',
+    '<div><strong>Contact</strong><span>' + escapeHtml(profile?.contact_name ?? "") + '</span></div>',
+    '<div><strong>Phone</strong><span>' + escapeHtml(profile?.phone ?? "") + '</span></div>',
+    '<div><strong>Service areas</strong><span>' + escapeHtml(profile?.service_areas ?? "") + '</span></div>',
+    '<div><strong>Truck capacity</strong><span>' + escapeHtml(String(profile?.truck_capacity_gallons ?? "")) + ' gallons</span></div>',
+    '<div><strong>Trucks</strong><span>' + escapeHtml(String(profile?.truck_count ?? "")) + '</span></div>',
+    '</div></section>'
+  ].join("");
+  const selectedCapacityScript = showForm && profile ? '<script>document.getElementById("truck_capacity_gallons").value="' + escapeHtml(String(profile.truck_capacity_gallons)) + '";</script>' : "";
+  const html = [
+    '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0877f9"><title>Hauler Portal — Water OnCall</title>',
+    '<style>:root{color-scheme:light;--blue:#0877f9;--navy:#06325e;--ink:#13283d;--muted:#61778d;--line:#dce8f3;--green:#08764b;--red:#a32121}*{box-sizing:border-box}body{margin:0;background:#f4f9fd;color:var(--ink);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}header{background:#fff;border-bottom:1px solid var(--line);padding:16px max(20px,calc((100vw - 920px)/2));display:flex;justify-content:space-between;align-items:center}.brand{font-size:21px;font-weight:850;color:var(--navy)}.brand span{color:var(--blue)}.account{display:flex;gap:12px;align-items:center;color:var(--muted);font-size:13px}button{border:0;border-radius:11px;background:var(--blue);color:#fff;font-weight:800;cursor:pointer}header button{background:#eaf4ff;color:var(--navy);padding:10px 14px}.account span{max-width:220px;overflow:hidden;text-overflow:ellipsis}main{max-width:920px;margin:auto;padding:38px 20px 70px}.eyebrow{text-transform:uppercase;letter-spacing:.14em;color:var(--blue);font-size:12px;font-weight:850}h1{font-size:clamp(32px,5vw,48px);letter-spacing:-.04em;color:var(--navy);margin:8px 0 5px}.lead{color:var(--muted);margin:0 0 24px}.status-card,.card{background:#fff;border:1px solid var(--line);border-radius:18px;padding:24px;box-shadow:0 10px 30px #06325e0d}.status-card{margin-bottom:20px;border-left:5px solid var(--blue)}.status-card h2,.card h2{margin:0 0 7px;color:var(--navy)}.status-card p,.intro{color:var(--muted);line-height:1.5;margin:0}.intro{margin-bottom:20px}.message{padding:14px 16px;border-radius:12px;margin-bottom:20px;font-weight:650}.message.success{background:#e4f8ef;color:var(--green)}.message.error{background:#ffebeb;color:var(--red)}.fields{display:grid;grid-template-columns:1fr 1fr;gap:16px}.field.full{grid-column:1/-1}label{display:block;font-size:13px;font-weight:750;margin-bottom:7px}input,select,textarea{width:100%;border:1px solid #bdd0e1;border-radius:11px;background:#fff;color:var(--ink);font:inherit;padding:12px}input,select{height:48px}textarea{min-height:95px;resize:vertical}.card button{width:100%;height:49px;margin-top:18px}.details{display:grid;gap:9px}.details div{display:grid;grid-template-columns:150px 1fr;gap:10px;padding:7px 0;border-bottom:1px solid #eef4f8;font-size:14px}.details span{color:var(--muted)}@media(max-width:600px){.account span{display:none}.fields{grid-template-columns:1fr}.field.full{grid-column:auto}.details div{grid-template-columns:1fr}}</style></head><body>',
+    '<header><div class="brand"><span>Water</span> OnCall Hauler</div><div class="account"><span>' + escapeHtml(user.email) + '</span><button id="hauler-logout" type="button">Sign out</button></div></header>',
+    '<main><div class="eyebrow">Delivery partner portal</div><h1>Hauler account</h1><p class="lead">Apply, track approval, and manage delivery work.</p><div id="hauler-message" class="message" aria-live="polite" hidden></div>',
+    '<section class="status-card"><h2>' + escapeHtml(statusTitle) + '</h2><p>' + escapeHtml(statusText) + '</p></section>',
+    form,
+    '</main>', selectedCapacityScript, '<script src="/hauler.js" defer></script></body></html>'
+  ].join("");
+  return new Response(html, { headers: { ...securityHeaders, "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
+}
+
+async function submitHaulerApplication(request: Request, env: Env): Promise<Response> {
+  if (!sameOrigin(request)) return json({ error: "Request not allowed." }, 403);
+  const user = await sessionUser(request, env);
+  if (!user) return json({ error: "Please sign in again." }, 401);
+  if (user.role === "admin") return json({ error: "The administrator account cannot submit a hauler application." }, 400);
+  const body = await readBody(request);
+  const businessName = textField(body?.business_name, 120);
+  const contactName = textField(body?.contact_name, 100);
+  const phone = textField(body?.phone, 30);
+  const serviceAreas = textField(body?.service_areas, 300);
+  const capacity = Number(body?.truck_capacity_gallons);
+  const truckCount = Number(body?.truck_count);
+  const licenseNumber = textField(body?.license_number, 100, false) || null;
+  const insuranceExpiry = textField(body?.insurance_expiry, 10, false) || null;
+  const notes = textField(body?.application_notes, 1000, false) || null;
+  if (!businessName || !contactName || !phone || phone.replace(/\D/g, "").length < 7 || !serviceAreas) return json({ error: "Complete the business, contact, phone, and service-area fields." }, 400);
+  if (![2000, 2500, 3000].includes(capacity) || !Number.isInteger(truckCount) || truckCount < 1 || truckCount > 100) return json({ error: "Choose a valid truck capacity and truck count." }, 400);
+  if (insuranceExpiry && !/^\d{4}-\d{2}-\d{2}$/.test(insuranceExpiry)) return json({ error: "Choose a valid insurance expiry date." }, 400);
+  await ensureHaulerSchema(env);
+  await env.DB.prepare(
+    "INSERT INTO hauler_profiles (user_id, business_name, contact_name, phone, service_areas, truck_capacity_gallons, truck_count, license_number, insurance_expiry, application_notes, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending') ON CONFLICT(user_id) DO UPDATE SET business_name=excluded.business_name, contact_name=excluded.contact_name, phone=excluded.phone, service_areas=excluded.service_areas, truck_capacity_gallons=excluded.truck_capacity_gallons, truck_count=excluded.truck_count, license_number=excluded.license_number, insurance_expiry=excluded.insurance_expiry, application_notes=excluded.application_notes, status='pending', rejection_reason=NULL, reviewed_at=NULL, reviewed_by=NULL, updated_at=datetime('now')"
+  ).bind(user.id, businessName, contactName, phone, serviceAreas, capacity, truckCount, licenseNumber, insuranceExpiry, notes).run();
+  await env.DB.prepare("UPDATE users SET role='hauler', full_name=?, phone=?, updated_at=datetime('now') WHERE id=?").bind(contactName, phone, user.id).run();
+  await Promise.all([
+    sendOrderEmail(env, user.email, "Water OnCall hauler application received", ["Hello " + contactName + ",", "", "We received the hauler application for " + businessName + ".", "Status: Pending administrator review", "", "We will email you when a decision is made."].join("\n")),
+    sendOrderEmail(env, "info@wateroncall.ca", "New hauler application — " + businessName, ["A new hauler application requires review.", "", "Business: " + businessName, "Contact: " + contactName, "Email: " + user.email, "Phone: " + phone, "Service areas: " + serviceAreas, "Truck capacity: " + capacity.toLocaleString() + " gallons", "Number of trucks: " + truckCount].join("\n")),
+  ]);
+  return json({ ok: true, status: "pending" }, 201);
+}
+
+const ADMIN_HAULERS_SCRIPT = [
+  'document.addEventListener("DOMContentLoaded", () => {',
+  '  const list = document.getElementById("hauler-list"); const empty = document.getElementById("hauler-empty"); const message = document.getElementById("decision-message");',
+  '  const field = (name, value) => { const row = document.createElement("div"); const strong = document.createElement("strong"); const span = document.createElement("span"); strong.textContent = name; span.textContent = String(value || "Not provided"); row.append(strong, span); return row; };',
+  '  const show = (text, error = false) => { message.textContent = text; message.hidden = false; message.className = error ? "message error" : "message success"; };',
+  '  async function decide(userId, status, button) { let reason = ""; if (status === "rejected") { reason = window.prompt("What should the hauler correct before applying again?") || ""; if (!reason.trim()) return; } button.disabled = true; try { const response = await fetch("/api/admin/haulers/" + encodeURIComponent(userId), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status, rejection_reason: reason }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); show("Hauler application " + status + " and the applicant was notified."); await load(); } catch (error) { show(error.message || "Unable to update the application.", true); button.disabled = false; } }',
+  '  async function load() { const response = await fetch("/api/admin/haulers"); if (response.status === 401 || response.status === 403) { window.location.href = "/login"; return; } const data = await response.json(); list.textContent = ""; empty.hidden = data.haulers.length > 0; data.haulers.forEach((hauler) => { const card = document.createElement("article"); card.className = "hauler-card"; const head = document.createElement("div"); head.className = "hauler-head"; const title = document.createElement("div"); const name = document.createElement("h2"); name.textContent = hauler.business_name; const status = document.createElement("span"); status.className = "status " + hauler.status; status.textContent = hauler.status.toUpperCase(); title.append(name, status); head.append(title); if (hauler.status === "pending") { const actions = document.createElement("div"); actions.className = "actions"; const approve = document.createElement("button"); approve.textContent = "Approve"; const reject = document.createElement("button"); reject.textContent = "Request changes"; reject.className = "reject"; approve.addEventListener("click", () => decide(hauler.user_id, "approved", approve)); reject.addEventListener("click", () => decide(hauler.user_id, "rejected", reject)); actions.append(approve, reject); head.append(actions); } card.append(head); const details = document.createElement("div"); details.className = "details"; [["Contact",hauler.contact_name],["Email",hauler.email],["Phone",hauler.phone],["Service areas",hauler.service_areas],["Truck capacity",Number(hauler.truck_capacity_gallons).toLocaleString()+" gallons"],["Number of trucks",hauler.truck_count],["Licence",hauler.license_number],["Insurance expiry",hauler.insurance_expiry],["Notes",hauler.application_notes],["Reason",hauler.rejection_reason]].forEach(([key,value]) => { if (value) details.append(field(key,value)); }); card.append(details); list.append(card); }); }',
+  '  document.getElementById("admin-hauler-logout").addEventListener("click", async () => { await fetch("/api/auth/logout", { method: "POST" }); window.location.href = "/login"; }); load();',
+  '});'
+].join("\n");
+
+function adminHaulersJavascript(): Response {
+  return new Response(ADMIN_HAULERS_SCRIPT, { headers: { ...securityHeaders, "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store" } });
+}
+
+function adminHaulersPage(user: AccountUserRow): Response {
+  const html = [
+    '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Hauler Applications — Water OnCall</title>',
+    '<style>:root{color-scheme:light;--blue:#0877f9;--navy:#06325e;--ink:#13283d;--muted:#61778d;--line:#dce8f3;--green:#08764b;--red:#a32121}*{box-sizing:border-box}body{margin:0;background:#f4f9fd;color:var(--ink);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}header{background:#fff;border-bottom:1px solid var(--line);padding:16px max(20px,calc((100vw - 1120px)/2));display:flex;justify-content:space-between;align-items:center}.brand{font-size:21px;font-weight:850;color:var(--navy)}.brand span{color:var(--blue)}.account{display:flex;gap:12px;align-items:center;font-size:13px;color:var(--muted)}a{color:var(--navy);font-weight:750}button{border:0;border-radius:10px;background:var(--blue);color:#fff;padding:10px 14px;font-weight:800;cursor:pointer}header button{background:#eaf4ff;color:var(--navy)}main{max-width:1120px;margin:auto;padding:38px 20px 70px}.eyebrow{text-transform:uppercase;letter-spacing:.14em;color:var(--blue);font-size:12px;font-weight:850}h1{font-size:clamp(32px,5vw,50px);letter-spacing:-.04em;color:var(--navy);margin:8px 0 4px}.lead{color:var(--muted);margin:0}.message{padding:14px 16px;border-radius:12px;margin:20px 0;font-weight:650}.message.success{background:#e4f8ef;color:var(--green)}.message.error{background:#ffebeb;color:var(--red)}.list{display:grid;gap:18px;margin-top:25px}.hauler-card{background:#fff;border:1px solid var(--line);border-radius:17px;padding:22px}.hauler-head{display:flex;justify-content:space-between;gap:16px;align-items:start}.hauler-head h2{margin:0 0 7px;color:var(--navy)}.status{display:inline-block;border-radius:999px;background:#fff3cd;color:#725400;padding:5px 9px;font-size:11px;font-weight:850}.status.approved{background:#e4f8ef;color:var(--green)}.status.rejected{background:#ffebeb;color:var(--red)}.actions{display:flex;gap:8px}.actions .reject{background:#fff0f0;color:var(--red);border:1px solid #f2caca}.details{display:grid;grid-template-columns:1fr 1fr;gap:0 24px;border-top:1px solid var(--line);margin-top:16px;padding-top:10px}.details div{display:grid;grid-template-columns:130px 1fr;gap:10px;padding:7px 0;font-size:13px}.details span{color:var(--muted);overflow-wrap:anywhere}.empty{margin-top:25px;background:#fff;border:1px dashed #bdd0e1;border-radius:14px;padding:30px;text-align:center;color:var(--muted)}@media(max-width:700px){.account span{display:none}.hauler-head{display:grid}.actions{width:100%}.actions button{flex:1}.details{grid-template-columns:1fr}.details div{grid-template-columns:110px 1fr}}</style></head><body>',
+    '<header><div class="brand"><span>Water</span> OnCall Admin</div><div class="account"><a href="/admin">Orders</a><span>' + escapeHtml(user.email) + '</span><button id="admin-hauler-logout" type="button">Sign out</button></div></header>',
+    '<main><div class="eyebrow">Partner management</div><h1>Hauler applications</h1><p class="lead">Review each delivery company before granting marketplace access.</p><div id="decision-message" class="message" aria-live="polite" hidden></div><div id="hauler-empty" class="empty">No hauler applications yet.</div><div id="hauler-list" class="list"></div></main><script src="/admin-haulers.js" defer></script></body></html>'
+  ].join("");
+  return new Response(html, { headers: { ...securityHeaders, "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
+}
+
+async function listAdminHaulers(request: Request, env: Env): Promise<Response> {
+  const user = await sessionUser(request, env);
+  if (!user) return json({ error: "Please sign in again." }, 401);
+  if (user.role !== "admin") return json({ error: "Administrator access required." }, 403);
+  await ensureHaulerSchema(env);
+  const result = await env.DB.prepare("SELECT hauler_profiles.*, users.email FROM hauler_profiles JOIN users ON users.id=hauler_profiles.user_id ORDER BY CASE hauler_profiles.status WHEN 'pending' THEN 0 ELSE 1 END, hauler_profiles.created_at DESC").all();
+  return json({ haulers: result.results });
+}
+
+async function decideHaulerApplication(request: Request, env: Env, userId: string): Promise<Response> {
+  if (!sameOrigin(request)) return json({ error: "Request not allowed." }, 403);
+  const admin = await sessionUser(request, env);
+  if (!admin) return json({ error: "Please sign in again." }, 401);
+  if (admin.role !== "admin") return json({ error: "Administrator access required." }, 403);
+  const body = await readBody(request);
+  const status = String(body?.status ?? "");
+  const reason = textField(body?.rejection_reason, 500, false) || null;
+  if (!["approved", "rejected"].includes(status)) return json({ error: "Choose approve or request changes." }, 400);
+  if (status === "rejected" && !reason) return json({ error: "Explain what the hauler should correct." }, 400);
+  await ensureHaulerSchema(env);
+  const profile = await env.DB.prepare("SELECT hauler_profiles.business_name, hauler_profiles.contact_name, users.email FROM hauler_profiles JOIN users ON users.id=hauler_profiles.user_id WHERE hauler_profiles.user_id=? LIMIT 1").bind(userId).first<{ business_name: string; contact_name: string; email: string }>();
+  if (!profile) return json({ error: "Hauler application not found." }, 404);
+  await env.DB.prepare("UPDATE hauler_profiles SET status=?, rejection_reason=?, reviewed_at=datetime('now'), reviewed_by=?, updated_at=datetime('now') WHERE user_id=?").bind(status, status === "rejected" ? reason : null, admin.id, userId).run();
+  const decisionText = status === "approved" ? "Your Water OnCall hauler application has been approved." : "Your Water OnCall hauler application needs changes before approval.\\n\\nRequested change: " + reason;
+  const emailSent = await sendOrderEmail(env, profile.email, "Water OnCall hauler application — " + readable(status), ["Hello " + profile.contact_name + ",", "", decisionText, "", "Sign in to the Water OnCall hauler portal to review your status."].join("\\n"));
+  return json({ ok: true, emailSent, status });
+}
+
 const ADMIN_SCRIPT = [
   'document.addEventListener("DOMContentLoaded", () => {',
   '  const list = document.getElementById("admin-orders"); const empty = document.getElementById("admin-empty"); const message = document.getElementById("admin-message");',
@@ -515,7 +683,7 @@ function adminPage(user: AccountUserRow): Response {
   const html = [
     '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0877f9"><title>Order Administration — Water OnCall</title>',
     '<style>:root{color-scheme:light;--blue:#0877f9;--navy:#06325e;--ink:#13283d;--muted:#61778d;--line:#dce8f3;--green:#08764b;--red:#a32121}*{box-sizing:border-box}body{margin:0;background:#f4f9fd;color:var(--ink);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}header{background:#fff;border-bottom:1px solid var(--line);padding:16px max(20px,calc((100vw - 1120px)/2));display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:2}.brand{font-size:21px;font-weight:850;color:var(--navy)}.brand span{color:var(--blue)}.account{display:flex;align-items:center;gap:12px;color:var(--muted);font-size:13px}button{border:0;border-radius:10px;background:#eaf4ff;color:var(--navy);padding:10px 14px;font-weight:750;cursor:pointer}main{max-width:1120px;margin:auto;padding:38px 20px 70px}.eyebrow{text-transform:uppercase;letter-spacing:.14em;color:var(--blue);font-size:12px;font-weight:850}h1{font-size:clamp(32px,5vw,52px);letter-spacing:-.04em;color:var(--navy);margin:8px 0 5px}p{margin:0;color:var(--muted);line-height:1.5}.message{padding:14px 16px;border-radius:12px;margin:20px 0;font-weight:650}.message.success{background:#e4f8ef;color:var(--green)}.message.error{background:#ffebeb;color:var(--red)}.orders{display:grid;gap:18px;margin-top:26px}.admin-order{background:#fff;border:1px solid var(--line);border-radius:17px;padding:22px;box-shadow:0 10px 30px #06325e0d}.admin-head{display:flex;justify-content:space-between;gap:20px;align-items:start}.admin-head h2{margin:0 0 5px;color:var(--navy);font-size:21px}.admin-head p{font-size:13px}.admin-head select{min-width:145px;height:44px;border:1px solid #bdd0e1;border-radius:10px;background:#fff;padding:0 10px;font:inherit;font-weight:750;color:var(--navy)}.admin-details{display:grid;grid-template-columns:1fr 1fr;gap:0 24px;border-top:1px solid var(--line);margin-top:17px;padding-top:12px}.admin-details div{display:grid;grid-template-columns:120px 1fr;gap:10px;padding:7px 0;font-size:13px}.admin-details strong{color:var(--navy)}.admin-details span{color:var(--muted);overflow-wrap:anywhere}.empty{margin-top:26px;background:#fff;border:1px dashed #bdd0e1;border-radius:14px;padding:30px;text-align:center;color:var(--muted)}@media(max-width:700px){.account span{display:none}.admin-head{display:grid}.admin-head select{width:100%}.admin-details{grid-template-columns:1fr}.admin-details div{grid-template-columns:105px 1fr}}</style></head><body>',
-    '<header><div class="brand"><span>Water</span> OnCall Admin</div><div class="account"><span>' + escapeHtml(user.email) + '</span><button id="admin-logout" type="button">Sign out</button></div></header>',
+    '<header><div class="brand"><span>Water</span> OnCall Admin</div><div class="account"><a href="/admin/haulers" style="color:var(--navy);font-weight:750">Hauler applications</a><span>' + escapeHtml(user.email) + '</span><button id="admin-logout" type="button">Sign out</button></div></header>',
     '<main><div class="eyebrow">Operations</div><h1>Delivery requests</h1><p>Review customer details and update each request as it moves through dispatch.</p><div id="admin-message" class="message" aria-live="polite" hidden></div><div id="admin-empty" class="empty">No delivery requests yet.</div><div id="admin-orders" class="orders"></div></main><script src="/admin.js" defer></script></body></html>'
   ].join("");
   return new Response(html, { headers: { ...securityHeaders, "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
@@ -801,6 +969,8 @@ export default {
     if (url.pathname === "/app.js" && request.method === "GET") return javascript();
     if (url.pathname === "/account.js" && request.method === "GET") return accountJavascript();
     if (url.pathname === "/admin.js" && request.method === "GET") return adminJavascript();
+    if (url.pathname === "/hauler.js" && request.method === "GET") return haulerJavascript();
+    if (url.pathname === "/admin-haulers.js" && request.method === "GET") return adminHaulersJavascript();
     if (url.pathname === "/api/auth/request" && request.method === "POST") return requestLoginCode(request, env);
     if (url.pathname === "/api/auth/verify" && request.method === "POST") return verifyLoginCode(request, env);
     if (url.pathname === "/api/auth/logout" && request.method === "POST") return logout(request, env);
@@ -811,6 +981,9 @@ export default {
     if (url.pathname.startsWith("/api/orders/") && url.pathname.endsWith("/cancel") && request.method === "POST") return cancelCustomerOrder(request, env, decodeURIComponent(url.pathname.slice("/api/orders/".length, -"/cancel".length)));
     if (url.pathname === "/api/admin/orders" && request.method === "GET") return listAdminOrders(request, env);
     if (url.pathname.startsWith("/api/admin/orders/") && request.method === "PATCH") return updateAdminOrder(request, env, decodeURIComponent(url.pathname.slice("/api/admin/orders/".length)));
+    if (url.pathname === "/api/hauler/application" && request.method === "POST") return submitHaulerApplication(request, env);
+    if (url.pathname === "/api/admin/haulers" && request.method === "GET") return listAdminHaulers(request, env);
+    if (url.pathname.startsWith("/api/admin/haulers/") && request.method === "PATCH") return decideHaulerApplication(request, env, decodeURIComponent(url.pathname.slice("/api/admin/haulers/".length)));
 
     if (request.method !== "GET" && request.method !== "HEAD") {
       return json({ error: "Method not allowed" }, 405);
@@ -822,6 +995,20 @@ export default {
       return user.role === "admin" ? adminPage(user) : json({ error: "Administrator access required." }, 403);
     }
 
+    if (url.pathname === "/admin/haulers") {
+      const user = await sessionUser(request, env);
+      if (!user) return Response.redirect(url.origin + "/login", 302);
+      return user.role === "admin" ? adminHaulersPage(user) : json({ error: "Administrator access required." }, 403);
+    }
+
+    if (url.pathname === "/hauler") {
+      const user = await sessionUser(request, env);
+      if (!user) return Response.redirect(url.origin + "/login?next=/hauler", 302);
+      await ensureHaulerSchema(env);
+      const profile = await env.DB.prepare("SELECT * FROM hauler_profiles WHERE user_id=? LIMIT 1").bind(user.id).first<HaulerProfileRow>();
+      return haulerPage(user, profile);
+    }
+
     if (url.pathname === "/account") {
       const user = await sessionUser(request, env);
       return user ? accountPage(user) : Response.redirect(url.origin + "/login", 302);
@@ -830,7 +1017,7 @@ export default {
     if (url.pathname === "/" || url.pathname === "/login") {
       const user = await sessionUser(request, env);
       if (!user) return page();
-      return Response.redirect(url.origin + (user.role === "admin" ? "/admin" : "/account"), 302);
+      return Response.redirect(url.origin + (user.role === "admin" ? "/admin" : user.role === "hauler" ? "/hauler" : "/account"), 302);
     }
 
     return json({ error: "Not found" }, 404);

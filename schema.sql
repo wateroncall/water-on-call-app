@@ -54,3 +54,25 @@ CREATE TABLE IF NOT EXISTS orders (
 CREATE INDEX IF NOT EXISTS idx_login_codes_email_created ON login_codes(email, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_orders_customer_created ON orders(customer_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS hauler_profiles (
+  user_id TEXT PRIMARY KEY,
+  business_name TEXT NOT NULL,
+  contact_name TEXT NOT NULL,
+  phone TEXT NOT NULL,
+  service_areas TEXT NOT NULL,
+  truck_capacity_gallons INTEGER NOT NULL,
+  truck_count INTEGER NOT NULL DEFAULT 1,
+  license_number TEXT,
+  insurance_expiry TEXT,
+  application_notes TEXT,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','suspended')),
+  rejection_reason TEXT,
+  reviewed_at TEXT,
+  reviewed_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_hauler_profiles_status ON hauler_profiles(status, created_at DESC);

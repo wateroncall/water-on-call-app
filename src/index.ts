@@ -394,12 +394,19 @@ const ACCOUNT_SCRIPT = [
   '    const response = await fetch("/api/orders"); if (response.status === 401) { window.location.href = "/login"; return; }',
   '    const data = await response.json(); orderList.textContent = ""; emptyOrders.hidden = data.orders.length > 0;',
   '    data.orders.forEach((order) => {',
-  '      const item = document.createElement("article"); item.className = "order-item";',
+  '      const item = document.createElement("article"); item.className = "order-item"; item.tabIndex = 0; item.setAttribute("role", "button"); item.setAttribute("aria-expanded", "false");',
   '      const top = document.createElement("div"); top.className = "order-top";',
   '      const title = document.createElement("strong"); title.textContent = label(order.order_type) + " · " + Number(order.gallons).toLocaleString() + " gallons";',
   '      const status = document.createElement("span"); status.className = "status"; status.textContent = label(order.status);',
-  '      const details = document.createElement("p"); details.textContent = order.address_line1 + ", " + order.city + " · Requested " + new Date(order.created_at + "Z").toLocaleDateString();',
-  '      top.append(title, status); item.append(top, details); orderList.append(item);',
+  '      const summary = document.createElement("p"); summary.textContent = order.address_line1 + ", " + order.city + " · Requested " + new Date(order.created_at + "Z").toLocaleDateString();',
+  '      const hint = document.createElement("span"); hint.className = "view-hint"; hint.textContent = "View request details";',
+  '      const expanded = document.createElement("div"); expanded.className = "order-details"; expanded.hidden = true;',
+  '      const address = [order.address_line1, order.address_line2, order.city, order.province, order.postal_code].filter(Boolean).join(", ");',
+  '      const fields = [["Delivery timing", label(order.delivery_timing)], ["Preferred date", order.requested_date || "Not specified"], ["Delivery address", address], ["Hose distance", Number(order.hose_distance_ft).toLocaleString() + " ft"], ["Notes", order.delivery_notes || "No notes provided."]];',
+  '      fields.forEach(([name, value]) => { const row = document.createElement("div"); const heading = document.createElement("strong"); const text = document.createElement("span"); heading.textContent = name; text.textContent = String(value); row.append(heading, text); expanded.append(row); });',
+  '      const toggle = () => { const open = expanded.hidden; expanded.hidden = !open; item.setAttribute("aria-expanded", String(open)); hint.textContent = open ? "Hide request details" : "View request details"; };',
+  '      item.addEventListener("click", toggle); item.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggle(); } });',
+  '      top.append(title, status); item.append(top, summary, hint, expanded); orderList.append(item);',
   '    });',
   '  }',
   '  loadOrders();',
@@ -430,7 +437,7 @@ function accountPage(user: AccountUserRow): Response {
     '.message{padding:14px 16px;border-radius:12px;margin:0 0 22px;font-weight:650}.message.success{background:#e4f8ef;color:var(--green)}.message.error{background:#ffebeb;color:var(--red)}',
     '.grid{display:grid;grid-template-columns:.85fr 1.15fr;gap:22px;align-items:start}.stack{display:grid;gap:22px}.card{background:#fff;border:1px solid var(--line);border-radius:19px;padding:25px;box-shadow:0 12px 35px #06325e0d}.card h2{margin:0 0 6px;color:var(--navy);font-size:22px}.intro{margin-bottom:21px;font-size:14px}',
     '.fields{display:grid;grid-template-columns:1fr 1fr;gap:16px}.field.full{grid-column:1/-1}label{display:block;font-size:13px;font-weight:750;margin-bottom:7px}input,select,textarea{width:100%;border:1px solid #bdd0e1;border-radius:11px;background:#fff;color:var(--ink);font:inherit;padding:12px}input,select{height:48px}textarea{min-height:94px;resize:vertical}input:focus,select:focus,textarea:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px #0877f91a}',
-    'button{height:49px;width:100%;border:0;border-radius:11px;background:var(--blue);color:#fff;font-size:15px;font-weight:800;cursor:pointer;margin-top:17px}button:disabled{opacity:.6;cursor:not-allowed}.fine{font-size:12px;margin-top:10px}.order-list{display:grid;gap:11px}.order-item{border:1px solid var(--line);border-radius:12px;padding:14px}.order-top{display:flex;justify-content:space-between;gap:10px}.order-item p{font-size:13px;margin-top:5px}.status{background:#eaf4ff;color:var(--navy);border-radius:999px;padding:5px 9px;font-size:11px;font-weight:800;white-space:nowrap}.empty{padding:18px;border:1px dashed #bdd0e1;border-radius:12px;text-align:center;font-size:14px}',
+    'button{height:49px;width:100%;border:0;border-radius:11px;background:var(--blue);color:#fff;font-size:15px;font-weight:800;cursor:pointer;margin-top:17px}button:disabled{opacity:.6;cursor:not-allowed}.fine{font-size:12px;margin-top:10px}.order-list{display:grid;gap:11px}.order-item{border:1px solid var(--line);border-radius:12px;padding:14px;cursor:pointer}.order-item:hover,.order-item:focus{border-color:var(--blue);outline:none;box-shadow:0 0 0 3px #0877f914}.order-top{display:flex;justify-content:space-between;gap:10px}.order-item p{font-size:13px;margin-top:5px}.view-hint{display:inline-block;margin-top:8px;color:var(--blue);font-size:12px;font-weight:750}.order-details{border-top:1px solid var(--line);margin-top:12px;padding-top:12px;cursor:default}.order-details div{display:grid;grid-template-columns:125px 1fr;gap:10px;padding:6px 0;font-size:13px}.order-details strong{color:var(--navy)}.order-details span{color:var(--muted);overflow-wrap:anywhere}.status{background:#eaf4ff;color:var(--navy);border-radius:999px;padding:5px 9px;font-size:11px;font-weight:800;white-space:nowrap}.empty{padding:18px;border:1px dashed #bdd0e1;border-radius:12px;text-align:center;font-size:14px}',
     '@media(max-width:800px){.grid{grid-template-columns:1fr}.welcome{align-items:start}.account span{display:none}}@media(max-width:560px){header{padding:14px 16px}main{padding:28px 15px 55px}.fields{grid-template-columns:1fr}.field.full{grid-column:auto}.card{padding:20px}.order-top{align-items:start;flex-direction:column}}',
     '</style></head><body>',
     '<header><div class="brand"><span>Water</span> OnCall</div><div class="account"><span>' + escapeHtml(user.email) + '</span><button id="logout" class="link-button" type="button">Sign out</button></div></header>',
@@ -493,7 +500,7 @@ async function listOrders(request: Request, env: Env): Promise<Response> {
   const user = await sessionUser(request, env);
   if (!user) return json({ error: "Please sign in again." }, 401);
   const result = await env.DB.prepare(
-    "SELECT id, status, order_type, delivery_timing, requested_date, gallons, address_line1, city, postal_code, created_at FROM orders WHERE customer_id = ? ORDER BY created_at DESC LIMIT 50"
+    "SELECT id, status, order_type, delivery_timing, requested_date, gallons, address_line1, address_line2, city, province, postal_code, hose_distance_ft, delivery_notes, created_at FROM orders WHERE customer_id = ? ORDER BY created_at DESC LIMIT 50"
   ).bind(user.id).all();
   return json({ orders: result.results });
 }

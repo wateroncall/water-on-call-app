@@ -505,6 +505,87 @@ async function listOrders(request: Request, env: Env): Promise<Response> {
   return json({ orders: result.results });
 }
 
+interface OrderEmailDetails {
+  id: string;
+  orderType: string;
+  deliveryTiming: string;
+  requestedDate: string | null;
+  gallons: number;
+  address1: string;
+  address2: string | null;
+  city: string;
+  postalCode: string;
+  hoseDistance: number;
+  notes: string | null;
+}
+
+function readable(value: string): string {
+  return value.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+async function sendOrderEmail(env: Env, to: string, subject: string, text: string): Promise<void> {
+  try {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + env.RESEND_API_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: "Water OnCall <orders@notify.wateroncall.ca>",
+        to: [to],
+        subject,
+        text,
+      }),
+    });
+    if (!response.ok) console.error("Resend rejected order email", response.status);
+  } catch (error) {
+    console.error("Unable to send order email", error);
+  }
+}
+
+async function sendOrderEmails(env: Env, user: AccountUserRow, order: OrderEmailDetails): Promise<void> {
+  const address = [order.address1, order.address2, order.city, "ON", order.postalCode].filter(Boolean).join(", ");
+  const preferredDate = order.requestedDate || "Not specified";
+  const notes = order.notes || "No notes provided.";
+  const amount = order.gallons.toLocaleString() + " gallons";
+  const common = [
+    "Request ID: " + order.id,
+    "Water use: " + readable(order.orderType),
+    "Amount: " + amount,
+    "Timing: " + readable(order.deliveryTiming),
+    "Preferred date: " + preferredDate,
+    "Delivery address: " + address,
+    "Hose distance: " + order.hoseDistance + " ft",
+    "Notes: " + notes,
+  ].join("\n");
+
+  const customerText = [
+    "Hello " + (user.full_name || "there") + ",",
+    "",
+    "We received your Water OnCall delivery request.",
+    "",
+    common,
+    "",
+    "This is a request for service and no payment has been taken. We will contact you when delivery details and pricing are confirmed.",
+  ].join("\n");
+
+  const adminText = [
+    "A new Water OnCall delivery request was submitted.",
+    "",
+    "Customer: " + (user.full_name || "Not provided"),
+    "Email: " + user.email,
+    "Phone: " + (user.phone || "Not provided"),
+    "",
+    common,
+  ].join("\n");
+
+  await Promise.all([
+    sendOrderEmail(env, user.email, "Water OnCall request received — " + amount, customerText),
+    sendOrderEmail(env, "info@wateroncall.ca", "New Water OnCall request — " + amount + " in " + order.city, adminText),
+  ]);
+}
+
 async function createOrder(request: Request, env: Env): Promise<Response> {
   if (!sameOrigin(request)) return json({ error: "Request not allowed." }, 403);
   const user = await sessionUser(request, env);
@@ -549,6 +630,21 @@ async function createOrder(request: Request, env: Env): Promise<Response> {
   await env.DB.prepare(
     "INSERT INTO orders (id, customer_id, order_type, delivery_timing, requested_date, gallons, address_line1, address_line2, city, province, postal_code, hose_distance_ft, delivery_notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ON', ?, ?, ?)"
   ).bind(id, user.id, orderType, deliveryTiming, requestedDate, gallons, address1, address2, city, postalCode, hoseDistance, notes).run();
+
+  await sendOrderEmails(env, user, {
+    id,
+    orderType,
+    deliveryTiming,
+    requestedDate,
+    gallons,
+    address1,
+    address2,
+    city,
+    postalCode,
+    hoseDistance,
+    notes,
+  });
+
   return json({ ok: true, order: { id, status: "requested" } }, 201);
 }
 

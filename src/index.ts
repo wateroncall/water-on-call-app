@@ -411,6 +411,7 @@ const ACCOUNT_SCRIPT = [
   '      const repeat = document.createElement("button"); repeat.type = "button"; repeat.className = "repeat-button"; repeat.textContent = "Order again";',
   '      repeat.addEventListener("click", (event) => { event.stopPropagation(); const form = document.getElementById("order-form"); const values = { order_type: order.order_type, gallons: String(order.gallons), delivery_timing: order.delivery_timing, address_line1: order.address_line1, address_line2: order.address_line2 || "", city: order.city, postal_code: order.postal_code, hose_distance_ft: String(order.hose_distance_ft), delivery_notes: order.delivery_notes || "" }; Object.entries(values).forEach(([name, value]) => { const field = form.elements.namedItem(name); if (field) field.value = value; }); dateInput.value = ""; updateDate(); form.scrollIntoView({ behavior: "smooth", block: "start" }); setTimeout(() => timing.focus(), 450); });',
   '      repeat.addEventListener("keydown", (event) => event.stopPropagation()); expanded.append(repeat);',
+  '      if (order.status === "requested" || order.status === "offered") { const cancel = document.createElement("button"); cancel.type = "button"; cancel.className = "cancel-button"; cancel.textContent = "Cancel request"; cancel.addEventListener("keydown", (event) => event.stopPropagation()); cancel.addEventListener("click", async (event) => { event.stopPropagation(); if (!window.confirm("Cancel this delivery request? This cannot be undone.")) return; cancel.disabled = true; try { const response = await fetch("/api/orders/" + encodeURIComponent(order.id) + "/cancel", { method: "POST" }); const data = await response.json(); if (!response.ok) throw new Error(data.error); show("Delivery request cancelled. Confirmation emails have been sent."); await loadOrders(); } catch (error) { show(error.message || "Unable to cancel this request.", true); cancel.disabled = false; } }); expanded.append(cancel); }',
   '      const toggle = () => { const open = expanded.hidden; expanded.hidden = !open; item.setAttribute("aria-expanded", String(open)); hint.textContent = open ? "Hide request details" : "View request details"; };',
   '      item.addEventListener("click", toggle); item.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggle(); } });',
   '      top.append(title, status); item.append(top, summary, hint, expanded); orderList.append(item);',
@@ -444,7 +445,7 @@ function accountPage(user: AccountUserRow): Response {
     '.message{padding:14px 16px;border-radius:12px;margin:0 0 22px;font-weight:650}.message.success{background:#e4f8ef;color:var(--green)}.message.error{background:#ffebeb;color:var(--red)}',
     '.grid{display:grid;grid-template-columns:.85fr 1.15fr;gap:22px;align-items:start}.stack{display:grid;gap:22px}.card{background:#fff;border:1px solid var(--line);border-radius:19px;padding:25px;box-shadow:0 12px 35px #06325e0d}.card h2{margin:0 0 6px;color:var(--navy);font-size:22px}.intro{margin-bottom:21px;font-size:14px}',
     '.fields{display:grid;grid-template-columns:1fr 1fr;gap:16px}.field.full{grid-column:1/-1}label{display:block;font-size:13px;font-weight:750;margin-bottom:7px}input,select,textarea{width:100%;border:1px solid #bdd0e1;border-radius:11px;background:#fff;color:var(--ink);font:inherit;padding:12px}input,select{height:48px}textarea{min-height:94px;resize:vertical}input:focus,select:focus,textarea:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px #0877f91a}',
-    'button{height:49px;width:100%;border:0;border-radius:11px;background:var(--blue);color:#fff;font-size:15px;font-weight:800;cursor:pointer;margin-top:17px}button:disabled{opacity:.6;cursor:not-allowed}.fine{font-size:12px;margin-top:10px}.order-list{display:grid;gap:11px}.order-item{border:1px solid var(--line);border-radius:12px;padding:14px;cursor:pointer}.order-item:hover,.order-item:focus{border-color:var(--blue);outline:none;box-shadow:0 0 0 3px #0877f914}.order-top{display:flex;justify-content:space-between;gap:10px}.order-item p{font-size:13px;margin-top:5px}.view-hint{display:inline-block;margin-top:8px;color:var(--blue);font-size:12px;font-weight:750}.order-details{border-top:1px solid var(--line);margin-top:12px;padding-top:12px;cursor:default}.order-details div{display:grid;grid-template-columns:125px 1fr;gap:10px;padding:6px 0;font-size:13px}.order-details strong{color:var(--navy)}.order-details span{color:var(--muted);overflow-wrap:anywhere}.repeat-button{width:auto;height:42px;margin-top:12px;padding:0 18px;background:#eaf4ff;color:var(--navy)}.repeat-button:hover{background:#dbeeff}.status{background:#eaf4ff;color:var(--navy);border-radius:999px;padding:5px 9px;font-size:11px;font-weight:800;white-space:nowrap}.empty{padding:18px;border:1px dashed #bdd0e1;border-radius:12px;text-align:center;font-size:14px}',
+    'button{height:49px;width:100%;border:0;border-radius:11px;background:var(--blue);color:#fff;font-size:15px;font-weight:800;cursor:pointer;margin-top:17px}button:disabled{opacity:.6;cursor:not-allowed}.fine{font-size:12px;margin-top:10px}.order-list{display:grid;gap:11px}.order-item{border:1px solid var(--line);border-radius:12px;padding:14px;cursor:pointer}.order-item:hover,.order-item:focus{border-color:var(--blue);outline:none;box-shadow:0 0 0 3px #0877f914}.order-top{display:flex;justify-content:space-between;gap:10px}.order-item p{font-size:13px;margin-top:5px}.view-hint{display:inline-block;margin-top:8px;color:var(--blue);font-size:12px;font-weight:750}.order-details{border-top:1px solid var(--line);margin-top:12px;padding-top:12px;cursor:default}.order-details div{display:grid;grid-template-columns:125px 1fr;gap:10px;padding:6px 0;font-size:13px}.order-details strong{color:var(--navy)}.order-details span{color:var(--muted);overflow-wrap:anywhere}.repeat-button,.cancel-button{width:auto;height:42px;margin:12px 9px 0 0;padding:0 18px}.repeat-button{background:#eaf4ff;color:var(--navy)}.repeat-button:hover{background:#dbeeff}.cancel-button{background:#fff0f0;color:var(--red);border:1px solid #f2caca}.cancel-button:hover{background:#ffe4e4}.status{background:#eaf4ff;color:var(--navy);border-radius:999px;padding:5px 9px;font-size:11px;font-weight:800;white-space:nowrap}.empty{padding:18px;border:1px dashed #bdd0e1;border-radius:12px;text-align:center;font-size:14px}',
     '@media(max-width:800px){.grid{grid-template-columns:1fr}.welcome{align-items:start}.account span{display:none}}@media(max-width:560px){header{padding:14px 16px}main{padding:28px 15px 55px}.fields{grid-template-columns:1fr}.field.full{grid-column:auto}.card{padding:20px}.order-top{align-items:start;flex-direction:column}}',
     '</style></head><body>',
     '<header><div class="brand"><span>Water</span> OnCall</div><div class="account"><span>' + escapeHtml(user.email) + '</span><button id="logout" class="link-button" type="button">Sign out</button></div></header>',
@@ -693,6 +694,41 @@ async function sendOrderEmails(env: Env, user: AccountUserRow, order: OrderEmail
   ]);
 }
 
+async function cancelCustomerOrder(request: Request, env: Env, orderId: string): Promise<Response> {
+  if (!sameOrigin(request)) return json({ error: "Request not allowed." }, 403);
+  const user = await sessionUser(request, env);
+  if (!user) return json({ error: "Please sign in again." }, 401);
+  const order = await env.DB.prepare(
+    "SELECT id, status, order_type, gallons, city FROM orders WHERE id = ? AND customer_id = ? LIMIT 1"
+  ).bind(orderId, user.id).first<{ id: string; status: string; order_type: string; gallons: number; city: string }>();
+  if (!order) return json({ error: "Delivery request not found." }, 404);
+  if (order.status === "cancelled") return json({ error: "This request is already cancelled." }, 409);
+  if (!["requested", "offered"].includes(order.status)) {
+    return json({ error: "This order has already been accepted. Contact Water OnCall to review cancellation terms." }, 409);
+  }
+
+  await env.DB.prepare(
+    "UPDATE orders SET status = 'cancelled', updated_at = datetime('now') WHERE id = ? AND customer_id = ?"
+  ).bind(orderId, user.id).run();
+
+  const description = readable(order.order_type) + " · " + Number(order.gallons).toLocaleString() + " gallons";
+  await Promise.all([
+    sendOrderEmail(
+      env,
+      user.email,
+      "Water OnCall cancellation confirmed",
+      ["Hello " + (user.full_name || "there") + ",", "", "Your delivery request has been cancelled.", "", "Order: " + description, "Location: " + order.city, "Request ID: " + order.id, "", "No payment has been taken for this request."].join("\n")
+    ),
+    sendOrderEmail(
+      env,
+      "info@wateroncall.ca",
+      "Water OnCall request cancelled — " + description,
+      ["A customer cancelled a delivery request before acceptance.", "", "Customer: " + (user.full_name || "Not provided"), "Email: " + user.email, "Phone: " + (user.phone || "Not provided"), "Order: " + description, "Location: " + order.city, "Request ID: " + order.id].join("\n")
+    ),
+  ]);
+  return json({ ok: true, order: { id: order.id, status: "cancelled" } });
+}
+
 async function createOrder(request: Request, env: Env): Promise<Response> {
   if (!sameOrigin(request)) return json({ error: "Request not allowed." }, 403);
   const user = await sessionUser(request, env);
@@ -772,6 +808,7 @@ export default {
     if (url.pathname === "/api/profile" && request.method === "POST") return saveProfile(request, env);
     if (url.pathname === "/api/orders" && request.method === "GET") return listOrders(request, env);
     if (url.pathname === "/api/orders" && request.method === "POST") return createOrder(request, env);
+    if (url.pathname.startsWith("/api/orders/") && url.pathname.endsWith("/cancel") && request.method === "POST") return cancelCustomerOrder(request, env, decodeURIComponent(url.pathname.slice("/api/orders/".length, -"/cancel".length)));
     if (url.pathname === "/api/admin/orders" && request.method === "GET") return listAdminOrders(request, env);
     if (url.pathname.startsWith("/api/admin/orders/") && request.method === "PATCH") return updateAdminOrder(request, env, decodeURIComponent(url.pathname.slice("/api/admin/orders/".length)));
 

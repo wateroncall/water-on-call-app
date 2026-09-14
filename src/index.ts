@@ -1,4 +1,5 @@
 const APP_NAME = "Water OnCall";
+const ADMIN_EMAIL = "admin@wateroncall.ca";
 
 interface Env {
   DB: D1Database;
@@ -50,7 +51,7 @@ const APP_SCRIPT = [
   '      if (!response.ok) throw new Error(data.error || "That code could not be verified.");',
   '      emailForm.hidden = true;',
   '      codeForm.hidden = true;',
-  '      window.location.href = "/account";',
+  '      window.location.href = data.user.role === "admin" ? "/admin" : "/account";',
   '    } catch (error) { show(error.message || "That code could not be verified.", true); }',
   '    finally { setBusy(codeForm, false); }',
   '  });',
@@ -205,14 +206,17 @@ async function verifyLoginCode(request: Request, env: Env): Promise<Response> {
 
   if (!user) {
     const userId = crypto.randomUUID();
+    const role = email === ADMIN_EMAIL ? "admin" : "customer";
     await env.DB.prepare(
-      "INSERT INTO users (id, email, email_verified_at) VALUES (?, ?, datetime('now'))"
-    ).bind(userId, email).run();
-    user = { id: userId, email, role: "customer", full_name: null };
+      "INSERT INTO users (id, email, role, email_verified_at) VALUES (?, ?, ?, datetime('now'))"
+    ).bind(userId, email, role).run();
+    user = { id: userId, email, role, full_name: null };
   } else {
+    const role = email === ADMIN_EMAIL ? "admin" : user.role;
     await env.DB.prepare(
-      "UPDATE users SET email_verified_at = datetime('now'), updated_at = datetime('now') WHERE id = ?"
-    ).bind(user.id).run();
+      "UPDATE users SET role = ?, email_verified_at = datetime('now'), updated_at = datetime('now') WHERE id = ?"
+    ).bind(role, user.id).run();
+    user = { ...user, role };
   }
 
   const token = secureToken();
@@ -477,6 +481,71 @@ function accountPage(user: AccountUserRow): Response {
   });
 }
 
+
+const ADMIN_SCRIPT = [
+  'document.addEventListener("DOMContentLoaded", () => {',
+  '  const list = document.getElementById("admin-orders"); const empty = document.getElementById("admin-empty"); const message = document.getElementById("admin-message");',
+  '  const label = (value) => String(value || "").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());',
+  '  const line = (name, value) => { const row = document.createElement("div"); const strong = document.createElement("strong"); const span = document.createElement("span"); strong.textContent = name; span.textContent = String(value || "Not provided"); row.append(strong, span); return row; };',
+  '  const show = (text, error = false) => { message.textContent = text; message.hidden = false; message.className = error ? "message error" : "message success"; };',
+  '  async function load() {',
+  '    const response = await fetch("/api/admin/orders"); if (response.status === 401 || response.status === 403) { window.location.href = "/login"; return; }',
+  '    const data = await response.json(); list.textContent = ""; empty.hidden = data.orders.length > 0;',
+  '    data.orders.forEach((order) => {',
+  '      const card = document.createElement("article"); card.className = "admin-order";',
+  '      const head = document.createElement("div"); head.className = "admin-head"; const title = document.createElement("div"); const name = document.createElement("h2"); name.textContent = label(order.order_type) + " · " + Number(order.gallons).toLocaleString() + " gallons"; const meta = document.createElement("p"); meta.textContent = "Requested " + new Date(order.created_at + "Z").toLocaleString(); title.append(name, meta);',
+  '      const select = document.createElement("select"); select.setAttribute("aria-label", "Order status"); ["requested","offered","accepted","assigned","en_route","delivered","cancelled"].forEach((status) => { const option = document.createElement("option"); option.value = status; option.textContent = label(status); option.selected = status === order.status; select.append(option); }); select.dataset.previous = order.status;',
+  '      select.addEventListener("change", async () => { const previous = select.dataset.previous; select.disabled = true; try { const response = await fetch("/api/admin/orders/" + encodeURIComponent(order.id), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: select.value }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); select.dataset.previous = select.value; show("Order status updated to " + label(select.value) + "."); } catch (error) { select.value = previous; show(error.message || "Unable to update status.", true); } finally { select.disabled = false; } });',
+  '      head.append(title, select); card.append(head);',
+  '      const details = document.createElement("div"); details.className = "admin-details"; const address = [order.address_line1, order.address_line2, order.city, order.province, order.postal_code].filter(Boolean).join(", "); [["Customer", order.full_name],["Email", order.email],["Phone", order.phone],["Delivery timing", label(order.delivery_timing)],["Preferred date", order.requested_date],["Address", address],["Hose distance", order.hose_distance_ft + " ft"],["Notes", order.delivery_notes || "No notes provided."],["Request ID", order.id]].forEach(([key,value]) => details.append(line(key,value))); card.append(details); list.append(card);',
+  '    });',
+  '  }',
+  '  document.getElementById("admin-logout").addEventListener("click", async () => { await fetch("/api/auth/logout", { method: "POST" }); window.location.href = "/login"; }); load();',
+  '});'
+].join("\n");
+
+function adminJavascript(): Response {
+  return new Response(ADMIN_SCRIPT, {
+    headers: { ...securityHeaders, "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store" },
+  });
+}
+
+function adminPage(user: AccountUserRow): Response {
+  const html = [
+    '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0877f9"><title>Order Administration — Water OnCall</title>',
+    '<style>:root{color-scheme:light;--blue:#0877f9;--navy:#06325e;--ink:#13283d;--muted:#61778d;--line:#dce8f3;--green:#08764b;--red:#a32121}*{box-sizing:border-box}body{margin:0;background:#f4f9fd;color:var(--ink);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}header{background:#fff;border-bottom:1px solid var(--line);padding:16px max(20px,calc((100vw - 1120px)/2));display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:2}.brand{font-size:21px;font-weight:850;color:var(--navy)}.brand span{color:var(--blue)}.account{display:flex;align-items:center;gap:12px;color:var(--muted);font-size:13px}button{border:0;border-radius:10px;background:#eaf4ff;color:var(--navy);padding:10px 14px;font-weight:750;cursor:pointer}main{max-width:1120px;margin:auto;padding:38px 20px 70px}.eyebrow{text-transform:uppercase;letter-spacing:.14em;color:var(--blue);font-size:12px;font-weight:850}h1{font-size:clamp(32px,5vw,52px);letter-spacing:-.04em;color:var(--navy);margin:8px 0 5px}p{margin:0;color:var(--muted);line-height:1.5}.message{padding:14px 16px;border-radius:12px;margin:20px 0;font-weight:650}.message.success{background:#e4f8ef;color:var(--green)}.message.error{background:#ffebeb;color:var(--red)}.orders{display:grid;gap:18px;margin-top:26px}.admin-order{background:#fff;border:1px solid var(--line);border-radius:17px;padding:22px;box-shadow:0 10px 30px #06325e0d}.admin-head{display:flex;justify-content:space-between;gap:20px;align-items:start}.admin-head h2{margin:0 0 5px;color:var(--navy);font-size:21px}.admin-head p{font-size:13px}.admin-head select{min-width:145px;height:44px;border:1px solid #bdd0e1;border-radius:10px;background:#fff;padding:0 10px;font:inherit;font-weight:750;color:var(--navy)}.admin-details{display:grid;grid-template-columns:1fr 1fr;gap:0 24px;border-top:1px solid var(--line);margin-top:17px;padding-top:12px}.admin-details div{display:grid;grid-template-columns:120px 1fr;gap:10px;padding:7px 0;font-size:13px}.admin-details strong{color:var(--navy)}.admin-details span{color:var(--muted);overflow-wrap:anywhere}.empty{margin-top:26px;background:#fff;border:1px dashed #bdd0e1;border-radius:14px;padding:30px;text-align:center;color:var(--muted)}@media(max-width:700px){.account span{display:none}.admin-head{display:grid}.admin-head select{width:100%}.admin-details{grid-template-columns:1fr}.admin-details div{grid-template-columns:105px 1fr}}</style></head><body>',
+    '<header><div class="brand"><span>Water</span> OnCall Admin</div><div class="account"><span>' + escapeHtml(user.email) + '</span><button id="admin-logout" type="button">Sign out</button></div></header>',
+    '<main><div class="eyebrow">Operations</div><h1>Delivery requests</h1><p>Review customer details and update each request as it moves through dispatch.</p><div id="admin-message" class="message" aria-live="polite" hidden></div><div id="admin-empty" class="empty">No delivery requests yet.</div><div id="admin-orders" class="orders"></div></main><script src="/admin.js" defer></script></body></html>'
+  ].join("");
+  return new Response(html, { headers: { ...securityHeaders, "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
+}
+
+async function listAdminOrders(request: Request, env: Env): Promise<Response> {
+  const user = await sessionUser(request, env);
+  if (!user) return json({ error: "Please sign in again." }, 401);
+  if (user.role !== "admin") return json({ error: "Administrator access required." }, 403);
+  const result = await env.DB.prepare(
+    "SELECT orders.*, users.email, users.full_name, users.phone FROM orders JOIN users ON users.id = orders.customer_id ORDER BY orders.created_at DESC LIMIT 200"
+  ).all();
+  return json({ orders: result.results });
+}
+
+async function updateAdminOrder(request: Request, env: Env, orderId: string): Promise<Response> {
+  if (!sameOrigin(request)) return json({ error: "Request not allowed." }, 403);
+  const user = await sessionUser(request, env);
+  if (!user) return json({ error: "Please sign in again." }, 401);
+  if (user.role !== "admin") return json({ error: "Administrator access required." }, 403);
+  const body = await readBody(request);
+  const status = String(body?.status ?? "");
+  const allowed = ["requested", "offered", "accepted", "assigned", "en_route", "delivered", "cancelled"];
+  if (!allowed.includes(status)) return json({ error: "Choose a valid order status." }, 400);
+  const result = await env.DB.prepare(
+    "UPDATE orders SET status = ?, updated_at = datetime('now') WHERE id = ?"
+  ).bind(status, orderId).run();
+  if (!result.meta.changes) return json({ error: "Order not found." }, 404);
+  return json({ ok: true, order: { id: orderId, status } });
+}
+
 function textField(value: unknown, maximum: number, required = true): string | null {
   const text = String(value ?? "").trim();
   if ((required && !text) || text.length > maximum) return null;
@@ -660,6 +729,7 @@ export default {
     }
     if (url.pathname === "/app.js" && request.method === "GET") return javascript();
     if (url.pathname === "/account.js" && request.method === "GET") return accountJavascript();
+    if (url.pathname === "/admin.js" && request.method === "GET") return adminJavascript();
     if (url.pathname === "/api/auth/request" && request.method === "POST") return requestLoginCode(request, env);
     if (url.pathname === "/api/auth/verify" && request.method === "POST") return verifyLoginCode(request, env);
     if (url.pathname === "/api/auth/logout" && request.method === "POST") return logout(request, env);
@@ -667,9 +737,17 @@ export default {
     if (url.pathname === "/api/profile" && request.method === "POST") return saveProfile(request, env);
     if (url.pathname === "/api/orders" && request.method === "GET") return listOrders(request, env);
     if (url.pathname === "/api/orders" && request.method === "POST") return createOrder(request, env);
+    if (url.pathname === "/api/admin/orders" && request.method === "GET") return listAdminOrders(request, env);
+    if (url.pathname.startsWith("/api/admin/orders/") && request.method === "PATCH") return updateAdminOrder(request, env, decodeURIComponent(url.pathname.slice("/api/admin/orders/".length)));
 
     if (request.method !== "GET" && request.method !== "HEAD") {
       return json({ error: "Method not allowed" }, 405);
+    }
+
+    if (url.pathname === "/admin") {
+      const user = await sessionUser(request, env);
+      if (!user) return Response.redirect(url.origin + "/login", 302);
+      return user.role === "admin" ? adminPage(user) : json({ error: "Administrator access required." }, 403);
     }
 
     if (url.pathname === "/account") {
@@ -679,7 +757,8 @@ export default {
 
     if (url.pathname === "/" || url.pathname === "/login") {
       const user = await sessionUser(request, env);
-      return user ? Response.redirect(url.origin + "/account", 302) : page();
+      if (!user) return page();
+      return Response.redirect(url.origin + (user.role === "admin" ? "/admin" : "/account"), 302);
     }
 
     return json({ error: "Not found" }, 404);

@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "water-on-call-app",
-  "main": "src/launch.ts",
+  "main": "src/launch_email.ts",
   "compatibility_date": "2026-09-14",
   "observability": {
     "enabled": true

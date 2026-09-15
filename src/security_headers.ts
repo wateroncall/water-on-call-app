@@ -1,0 +1,4 @@
+import app from './acceptance_guard';
+function secure(r:Response){const h=new Headers(r.headers);h.set('X-Content-Type-Options','nosniff');h.set('X-Frame-Options','DENY');h.set('Referrer-Policy','strict-origin-when-cross-origin');h.set('Permissions-Policy','camera=(), microphone=(), geolocation=(self), payment=(self)');if(!h.has('Cache-Control'))h.set('Cache-Control','no-store');return new Response(r.body,{status:r.status,statusText:r.statusText,headers:h})}
+function sameOrigin(req:Request){const o=req.headers.get('Origin');return !o||o===new URL(req.url).origin}
+export default{async fetch(req:Request,env:any,ctx:ExecutionContext){const u=new URL(req.url);if(req.method!=='GET'&&u.pathname.startsWith('/api/')&&!sameOrigin(req))return new Response(JSON.stringify({error:'Request not allowed.'}),{status:403,headers:{'Content-Type':'application/json','Cache-Control':'no-store'}});const r=await app.fetch(req,env,ctx);return secure(r)}};

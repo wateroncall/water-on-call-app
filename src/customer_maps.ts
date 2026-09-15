@@ -38,7 +38,7 @@ function customerAddressScript(): Response {
     const component=(components,type)=>{const c=(components||[]).find(x=>(x.types||[]).includes(type));return c?.longText||c?.shortText||''};
     const clear=()=>{placeId.value='';lat.value='';lng.value='';formatted.value='';verified.textContent='Address not yet confirmed';verified.style.color='#a32121'};
     autocomplete.addEventListener('input',clear);
-    autocomplete.addEventListener('gmp-select',async(event)=>{try{const place=event.placePrediction.toPlace();await place.fetchFields({fields:['id','formattedAddress','addressComponents','location']});const comps=place.addressComponents||[];const number=component(comps,'street_number');const route=component(comps,'route');const town=component(comps,'locality')||component(comps,'postal_town')||component(comps,'administrative_area_level_3')||component(comps,'sublocality');const code=component(comps,'postal_code');if(!place.id||!place.location||!place.formattedAddress||!code){clear();verified.textContent='Please choose a complete Canadian street address.';return}street.value=[number,route].filter(Boolean).join(' ')||place.formattedAddress;city.value=town||'Ontario';postal.value=code.toUpperCase();placeId.value=place.id;lat.value=String(place.location.lat());lng.value=String(place.location.lng());formatted.value=place.formattedAddress;verified.textContent='✓ Google-confirmed address: '+place.formattedAddress;verified.style.color='#08764b'}catch(e){clear();verified.textContent='Unable to confirm that address. Please select it again.'}});
+    autocomplete.addEventListener('gmp-placeselect',async(event)=>{try{const place=event.placePrediction.toPlace();await place.fetchFields({fields:['id','formattedAddress','addressComponents','location']});const comps=place.addressComponents||[];const number=component(comps,'street_number');const route=component(comps,'route');const town=component(comps,'locality')||component(comps,'postal_town')||component(comps,'administrative_area_level_3')||component(comps,'sublocality');const code=component(comps,'postal_code');if(!place.id||!place.location||!place.formattedAddress||!code){clear();verified.textContent='Please choose a complete Canadian street address.';return}street.value=[number,route].filter(Boolean).join(' ')||place.formattedAddress;city.value=town||'Ontario';postal.value=code.toUpperCase();placeId.value=place.id;lat.value=String(place.location.lat());lng.value=String(place.location.lng());formatted.value=place.formattedAddress;verified.textContent='✓ Google-confirmed address: '+place.formattedAddress;verified.style.color='#08764b'}catch(e){clear();verified.textContent='Unable to confirm that address. Please select it again.'}});
     form.addEventListener('submit',(e)=>{if(!placeId.value){e.preventDefault();e.stopImmediatePropagation();verified.textContent='Please select your delivery address from the Google suggestions before submitting.';verified.style.color='#a32121';autocomplete.focus()}},true);
   });`;
   return new Response(js,{headers:{"Content-Type":"text/javascript; charset=utf-8","Cache-Control":"no-store"}});
@@ -59,11 +59,7 @@ export default {
     const url=new URL(request.url);
     const key=String(env.GOOGLE_MAPS_BROWSER_KEY||'').trim();
     if(url.pathname==='/customer-address.js'&&request.method==='GET') return customerAddressScript();
-
-    if(url.pathname.startsWith('/api/auth/') || url.pathname.startsWith('/api/phone/')) {
-      return authApp.fetch(request, env, ctx);
-    }
-
+    if(url.pathname.startsWith('/api/auth/') || url.pathname.startsWith('/api/phone/')) return authApp.fetch(request, env, ctx);
     if(url.pathname==='/api/orders'&&request.method==='POST'&&key&&request.headers.get('Content-Type')?.includes('application/json')){
       let body:any={};try{body=await request.clone().json()}catch{}
       if(!body.google_place_id||!body.google_formatted_address||!Number.isFinite(Number(body.google_lat))||!Number.isFinite(Number(body.google_lng))){return json({error:'Please select and confirm your delivery address from the Google suggestions.'},400)}
@@ -73,7 +69,6 @@ export default {
       if(response.ok){try{const data:any=await response.clone().json();const orderId=data?.order?.id;if(orderId){await ensureAddressSchema(env);await env.DB.prepare(`INSERT OR REPLACE INTO order_google_addresses (order_id,place_id,formatted_address,lat,lng) VALUES (?,?,?,?,?)`).bind(orderId,String(body.google_place_id),String(body.google_formatted_address),Number(body.google_lat),Number(body.google_lng)).run()}}catch{}}
       return response;
     }
-
     const response=await app.fetch(request,env,ctx);
     if(key&&url.pathname==='/account'&&request.method==='GET'&&response.headers.get('Content-Type')?.includes('text/html')){
       const html=injectMaps(await response.text(),key); const headers=new Headers(response.headers);headers.delete('Content-Length');headers.set('Cache-Control','no-store');allowGoogle(headers);return new Response(html,{status:response.status,statusText:response.statusText,headers});

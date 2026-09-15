@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "water-on-call-app",
-  "main": "src/pilot_foundation.ts",
+  "main": "src/pilot_rules.ts",
   "compatibility_date": "2026-09-14",
   "observability": {
     "enabled": true

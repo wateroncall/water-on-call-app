@@ -73,6 +73,23 @@ function javascript(): Response {
   });
 }
 
+const PROFILE_INTAKE_API = "https://wateroncall-backend-production-cov9zr.laravel.cloud/api/v1/profile-intake";
+
+async function syncLaravelProfile(payload: Record<string, unknown>): Promise<boolean> {
+  try {
+    const response = await fetch(PROFILE_INTAKE_API, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) console.error("Laravel profile intake failed", response.status, await response.text());
+    return response.ok;
+  } catch (error) {
+    console.error("Laravel profile intake failed", error);
+    return false;
+  }
+}
+
 function normalizeEmail(value: unknown): string | null {
   const email = String(value ?? "").trim().toLowerCase();
   if (email.length < 5 || email.length > 254 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return null;
@@ -732,7 +749,22 @@ async function submitHaulerApplication(request: Request, env: Env): Promise<Resp
     "INSERT INTO hauler_profiles (user_id, business_name, contact_name, phone, service_areas, truck_capacity_gallons, truck_count, license_number, insurance_expiry, application_notes, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending') ON CONFLICT(user_id) DO UPDATE SET business_name=excluded.business_name, contact_name=excluded.contact_name, phone=excluded.phone, service_areas=excluded.service_areas, truck_capacity_gallons=excluded.truck_capacity_gallons, truck_count=excluded.truck_count, license_number=excluded.license_number, insurance_expiry=excluded.insurance_expiry, application_notes=excluded.application_notes, status='pending', rejection_reason=NULL, reviewed_at=NULL, reviewed_by=NULL, updated_at=datetime('now')"
   ).bind(user.id, businessName, contactName, phone, serviceAreas, capacity, truckCount, licenseNumber, insuranceExpiry, notes).run();
   await env.DB.prepare("UPDATE users SET role='hauler', full_name=?, phone=?, updated_at=datetime('now') WHERE id=?").bind(contactName, phone, user.id).run();
+  const normalizedPhone = normalizeCanadianPhone(phone);
+  const intakeCapacity = Number(body?.custom_truck_capacity_gallons || capacity);
+  const adminSync = syncLaravelProfile({
+    profile_type: "hauler", email: user.email, name: contactName, phone_e164: normalizedPhone,
+    company_name: businessName, business_address: textField(body?.business_address, 500, false) || null,
+    service_areas: serviceAreas, truck_capacity_gallons: intakeCapacity, truck_count: truckCount,
+    business_number: licenseNumber, insurance_policy_number: textField(body?.liability_insurance_provider, 150, false) || textField(body?.vehicle_insurance_provider, 150, false) || null,
+    insurance_expires_on: textField(body?.liability_insurance_expiry, 10, false) || textField(body?.vehicle_insurance_expiry, 10, false) || insuranceExpiry,
+    application_notes: notes, business_hours: textField(body?.business_hours, 1000, false) || null,
+    private_fill_stations: textField(body?.private_fill_stations, 2000, false) || null,
+    other_services: textField(body?.other_services, 2000, false) || null,
+    agreement_accepted: Boolean(body?.damage_responsibility_ack),
+    order_types: ["cistern", "pool", "hot_tub", "other"],
+  });
   await Promise.all([
+    adminSync,
     sendOrderEmail(env, user.email, "Water OnCall hauler application received", ["Hello " + contactName + ",", "", "We received the hauler application for " + businessName + ".", "Status: Pending administrator review", "", "We will email you when a decision is made."].join("\n")),
     sendOrderEmail(env, "info@wateroncall.ca", "New hauler application — " + businessName, ["A new hauler application requires review.", "", "Business: " + businessName, "Contact: " + contactName, "Email: " + user.email, "Phone: " + phone, "Service areas: " + serviceAreas, "Truck capacity: " + capacity.toLocaleString() + " gallons", "Number of trucks: " + truckCount].join("\n")),
   ]);
@@ -910,7 +942,8 @@ async function saveProfile(request: Request, env: Env): Promise<Response> {
     "UPDATE users SET full_name = ?, phone = ?, updated_at = datetime('now') WHERE id = ?"
   ).bind(fullName, phone, user.id).run();
   await env.DB.prepare("DELETE FROM verified_phones WHERE user_id=? AND phone<>?").bind(user.id, phone).run();
-  return json({ ok: true });
+  const adminSynced = await syncLaravelProfile({ profile_type: "customer", email: user.email, name: fullName, phone_e164: phone, preferred_channel: "email" });
+  return json({ ok: true, admin_synced: adminSynced });
 }
 
 async function listOrders(request: Request, env: Env): Promise<Response> {

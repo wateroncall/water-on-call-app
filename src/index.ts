@@ -73,7 +73,8 @@ function javascript(): Response {
   });
 }
 
-const PROFILE_INTAKE_API = "https://wateroncall-backend-production-cov9zr.laravel.cloud/api/v1/profile-intake";
+const LARAVEL_API = "https://wateroncall-backend-production-cov9zr.laravel.cloud/api/v1";
+const PROFILE_INTAKE_API = LARAVEL_API + "/profile-intake";
 
 async function syncLaravelProfile(payload: Record<string, unknown>): Promise<boolean> {
   try {
@@ -86,6 +87,19 @@ async function syncLaravelProfile(payload: Record<string, unknown>): Promise<boo
     return response.ok;
   } catch (error) {
     console.error("Laravel profile intake failed", error);
+    return false;
+  }
+}
+
+async function syncLaravelOrder(payload: Record<string, unknown>): Promise<boolean> {
+  try {
+    const response = await fetch(LARAVEL_API + "/order-intake", {
+      method: "POST", headers: { "Content-Type": "application/json", "Accept": "application/json" }, body: JSON.stringify(payload),
+    });
+    if (!response.ok) console.error("Laravel order intake failed", response.status, await response.text());
+    return response.ok;
+  } catch (error) {
+    console.error("Laravel order intake failed", error);
     return false;
   }
 }
@@ -752,7 +766,7 @@ async function submitHaulerApplication(request: Request, env: Env): Promise<Resp
   const normalizedPhone = normalizeCanadianPhone(phone);
   const intakeCapacity = Number(body?.custom_truck_capacity_gallons || capacity);
   const adminSync = syncLaravelProfile({
-    profile_type: "hauler", email: user.email, name: contactName, phone_e164: normalizedPhone,
+    profile_type: "hauler", external_user_id: user.id, email: user.email, name: contactName, phone_e164: normalizedPhone,
     company_name: businessName, business_address: textField(body?.business_address, 500, false) || null,
     service_areas: serviceAreas, truck_capacity_gallons: intakeCapacity, truck_count: truckCount,
     business_number: licenseNumber, insurance_policy_number: textField(body?.liability_insurance_provider, 150, false) || textField(body?.vehicle_insurance_provider, 150, false) || null,
@@ -942,7 +956,7 @@ async function saveProfile(request: Request, env: Env): Promise<Response> {
     "UPDATE users SET full_name = ?, phone = ?, updated_at = datetime('now') WHERE id = ?"
   ).bind(fullName, phone, user.id).run();
   await env.DB.prepare("DELETE FROM verified_phones WHERE user_id=? AND phone<>?").bind(user.id, phone).run();
-  const adminSynced = await syncLaravelProfile({ profile_type: "customer", email: user.email, name: fullName, phone_e164: phone, preferred_channel: "email" });
+  const adminSynced = await syncLaravelProfile({ profile_type: "customer", external_user_id: user.id, email: user.email, name: fullName, phone_e164: phone, preferred_channel: "email" });
   return json({ ok: true, admin_synced: adminSynced });
 }
 
@@ -1118,21 +1132,30 @@ async function createOrder(request: Request, env: Env): Promise<Response> {
     "INSERT INTO orders (id, customer_id, order_type, delivery_timing, requested_date, gallons, address_line1, address_line2, city, province, postal_code, hose_distance_ft, delivery_notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ON', ?, ?, ?)"
   ).bind(id, user.id, orderType, deliveryTiming, requestedDate, gallons, address1, address2, city, postalCode, hoseDistance, notes).run();
 
-  await sendOrderEmails(env, user, {
-    id,
-    orderType,
-    deliveryTiming,
-    requestedDate,
-    gallons,
-    address1,
-    address2,
-    city,
-    postalCode,
-    hoseDistance,
-    notes,
+  const preferences = await env.DB.prepare("SELECT hauler_id, preference FROM customer_hauler_preferences WHERE customer_id=? AND preference<>'excluded' ORDER BY CASE preference WHEN 'preferred' THEN 0 ELSE 1 END").bind(user.id).all<{hauler_id:string;preference:string}>();
+  const preferred = (preferences.results || []).find((item) => item.preference === "preferred")?.hauler_id || null;
+  const backups = (preferences.results || []).filter((item) => item.preference === "allowed").map((item) => item.hauler_id);
+  let start = new Date(Date.now() + (deliveryTiming === "urgent" ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000));
+  let end = new Date(start.getTime() + (deliveryTiming === "flexible" ? 24 : 2) * 60 * 60 * 1000);
+  if (deliveryTiming === "scheduled" && requestedDate) {
+    start = new Date(requestedDate + "T12:00:00-04:00");
+    end = new Date(start.getTime() + 2 * 60 * 60 * 1000);
+  }
+  const adminSynced = await syncLaravelOrder({
+    external_order_id: id, customer_email: user.email,
+    preferred_external_hauler_id: preferred, backup_external_hauler_ids: backups,
+    order_type: orderType === "commercial" ? "other" : orderType,
+    requested_delivery_start: start.toISOString(), requested_delivery_end: end.toISOString(),
+    total_imperial_gallons: gallons, load_count: 1,
+    address_line1: address1, address_line2: address2, city, province: "Ontario", postal_code: postalCode,
+    delivery_notes: notes, hose_distance_feet: hoseDistance,
   });
 
-  return json({ ok: true, order: { id, status: "requested" } }, 201);
+  await sendOrderEmails(env, user, {
+    id, orderType, deliveryTiming, requestedDate, gallons, address1, address2, city, postalCode, hoseDistance, notes,
+  });
+
+  return json({ ok: true, admin_synced: adminSynced, order: { id, status: "requested" } }, 201);
 }
 
 export default {

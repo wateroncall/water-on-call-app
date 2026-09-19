@@ -10,6 +10,7 @@ export interface NotificationInput {
   recipient: string;
   subject?: string;
   html?: string;
+  text?: string;
   orderId?: string | null;
   userId?: string | null;
   metadata?: Record<string, unknown>;
@@ -46,10 +47,30 @@ async function createLog(env:any,input:NotificationInput):Promise<string>{
 
 export async function sendNotification(env:any,input:NotificationInput):Promise<{ok:boolean;logId:string;error?:string}>{
   const logId=await createLog(env,input);
-  if(input.channel!=="email"){
-    const error="SMS notification transport is not connected to the central notification service yet.";
-    await env.DB.prepare(`UPDATE notification_log SET status='failed',error_message=? WHERE id=?`).bind(error,logId).run();
-    return {ok:false,logId,error};
+  if(input.channel==="sms"){
+    if(!env.TWILIO_ACCOUNT_SID||!env.TWILIO_AUTH_TOKEN||!env.TWILIO_FROM_NUMBER){
+      const error="Twilio credentials are missing";
+      await env.DB.prepare(`UPDATE notification_log SET status='failed',error_message=? WHERE id=?`).bind(error,logId).run();
+      return {ok:false,logId,error};
+    }
+    try{
+      const endpoint=`https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Messages.json`;
+      const body=new URLSearchParams({To:input.recipient,From:env.TWILIO_FROM_NUMBER,Body:input.text||String(input.html||"").replace(/<[^>]+>/g," ").replace(/\s+/g," ").trim()||input.subject||"Water OnCall update"});
+      const auth=btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`);
+      const response=await fetch(endpoint,{method:"POST",headers:{Authorization:`Basic ${auth}`,"Content-Type":"application/x-www-form-urlencoded"},body});
+      const data:any=await response.json().catch(()=>({}));
+      if(!response.ok){
+        const error=String(data?.message||`Twilio returned ${response.status}`);
+        await env.DB.prepare(`UPDATE notification_log SET status='failed',error_message=? WHERE id=?`).bind(error,logId).run();
+        return {ok:false,logId,error};
+      }
+      await env.DB.prepare(`UPDATE notification_log SET status='sent',provider_message_id=?,sent_at=datetime('now') WHERE id=?`).bind(data?.sid||null,logId).run();
+      return {ok:true,logId};
+    }catch(err:any){
+      const error=String(err?.message||err||"Unknown SMS notification error");
+      await env.DB.prepare(`UPDATE notification_log SET status='failed',error_message=? WHERE id=?`).bind(error,logId).run();
+      return {ok:false,logId,error};
+    }
   }
   if(!env.RESEND_API_KEY){
     const error="RESEND_API_KEY is missing";

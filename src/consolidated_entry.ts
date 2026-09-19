@@ -1,7 +1,7 @@
 // Consolidated active entrypoint.
 // Keep established customer Maps + operations tuning in the chain, then apply the
 // newer pilot/testing/admin/security layers once on top.
-import legacyIntegrated from './customer_maps';
+import legacyIntegrated from './launch';
 import modern from './admin_test_tools';
 
 // Routes owned by the modern pilot stack must go through it. All established

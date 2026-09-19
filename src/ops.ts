@@ -1,4 +1,5 @@
 import app from "./portal";
+import { transitionOrder } from "./order_lifecycle";
 
 const headers = { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY" };
 
@@ -185,7 +186,11 @@ async function assignDriver(request: Request, env: any, orderId: string): Promis
   if (!job) return json({ error: "That delivery is not assigned to your company." }, 404);
   await env.DB.prepare(`INSERT INTO driver_assignments (order_id,hauler_id,driver_user_id,assigned_at) VALUES (?,?,?,datetime('now'))
     ON CONFLICT(order_id) DO UPDATE SET driver_user_id=excluded.driver_user_id,assigned_at=datetime('now')`).bind(orderId,haulerId,driverId).run();
-  await env.DB.prepare("UPDATE orders SET status=CASE WHEN status='accepted' THEN 'assigned' ELSE status END,updated_at=datetime('now') WHERE id=?").bind(orderId).run();
+  const current = await env.DB.prepare("SELECT status FROM orders WHERE id=? LIMIT 1").bind(orderId).first<any>();
+  if (current?.status === "accepted") {
+    const result = await transitionOrder(env,{orderId,toStatus:"assigned",actorUserId:user.id,actorRole:"dispatcher",eventType:"driver_assigned",details:{hauler_id:haulerId,driver_user_id:driverId}});
+    if (!result.ok) return json({ error: result.error }, 409);
+  }
   return json({ ok: true });
 }
 
@@ -213,8 +218,9 @@ async function driverStatus(request: Request, env: any, orderId: string): Promis
   if (!['en_route','delivered','completed'].includes(next)) return json({ error: "Invalid status." }, 400);
   const job = await env.DB.prepare("SELECT order_id FROM driver_assignments WHERE order_id=? AND driver_user_id=? LIMIT 1").bind(orderId,user.id).first();
   if (!job) return json({ error: "That delivery is not assigned to you." }, 404);
-  await env.DB.prepare("UPDATE orders SET status=?,updated_at=datetime('now') WHERE id=?").bind(next,orderId).run();
-  return json({ ok: true, status: next });
+  const result = await transitionOrder(env,{orderId,toStatus:next,actorUserId:user.id,actorRole:"driver",eventType:"driver_status_changed",details:{hauler_id:team.hauler_id}});
+  if (!result.ok) return json({ error: result.error }, 409);
+  return json({ ok: true, status: result.toStatus });
 }
 
 function shell(title: string, subtitle: string, body: string, script = ""): Response {

@@ -248,6 +248,12 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
+const OFFER_ACTION_API = "https://wateroncall-backend-production-cov9zr.laravel.cloud/api/v1/offer-action-intake";
+
+async function syncOfferAction(orderId:string,haulerId:string,action:"accept"|"decline"):Promise<{ok:boolean;error?:string}>{
+  try{const response=await fetch(OFFER_ACTION_API,{method:"POST",headers:{"Content-Type":"application/json","Accept":"application/json"},body:JSON.stringify({external_order_id:orderId,external_hauler_id:haulerId,action:action==="decline"?"reject":"accept",idempotency_key:orderId+":"+haulerId+":"+action})});if(response.ok)return {ok:true};const body=await response.json().catch(()=>({} as any)) as any;return {ok:false,error:body?.message||body?.error||body?.errors?.offer?.[0]||"Unable to update the delivery workflow."}}catch{return {ok:false,error:"The delivery workflow is temporarily unavailable."}}
+}
+
 async function sessionHauler(request: Request, env: any): Promise<any | null> {
   const token = cookieValue(request, "woc_session");
   if (!token) return null;
@@ -313,10 +319,18 @@ async function marketplaceList(request: Request, env: any): Promise<Response> {
           SELECT 1 FROM order_offers f
            WHERE f.order_id=o.id AND f.hauler_id=? AND f.status='declined'
         )
+        AND EXISTS (
+          SELECT 1 FROM customer_hauler_preferences cp
+           WHERE cp.customer_id=o.customer_id AND cp.hauler_id=?
+             AND (cp.preference='preferred' OR (cp.preference='allowed' AND (
+               NOT EXISTS (SELECT 1 FROM customer_hauler_preferences pp WHERE pp.customer_id=o.customer_id AND pp.preference='preferred')
+               OR datetime(o.created_at)<=datetime('now','-24 hours')
+             )))
+        )
       ORDER BY CASE o.delivery_timing WHEN 'urgent' THEN 0 WHEN 'scheduled' THEN 1 ELSE 2 END,
                COALESCE(o.requested_date,'9999-12-31'), o.created_at ASC
       LIMIT 30`
-  ).bind(hauler.id, Number(hauler.truck_capacity_gallons || 0), hauler.id).all();
+  ).bind(hauler.id, Number(hauler.truck_capacity_gallons || 0), hauler.id, hauler.id).all();
 
   for (const order of rows.results || []) {
     await env.DB.prepare(
@@ -361,6 +375,9 @@ async function marketplaceDecision(request: Request, env: any, orderId: string, 
   await env.DB.prepare(
     "INSERT OR IGNORE INTO order_offers (id,order_id,hauler_id,status) VALUES (?,?,?,'offered')"
   ).bind(crypto.randomUUID(), orderId, hauler.id).run();
+
+  const laravel = await syncOfferAction(orderId, hauler.id, action);
+  if (!laravel.ok) return json({ error: laravel.error || "Unable to update this delivery." }, 409);
 
   if (action === "decline") {
     await env.DB.prepare(

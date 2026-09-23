@@ -1,3 +1,6 @@
+import { ensureCustomerProfileSchema, wantsEmail, wantsSms, type CustomerProfileRow, type NotificationPreference } from "./customer_profile";
+import { sendNotification } from "./notifications";
+
 const APP_NAME = "Water OnCall";
 const ADMIN_EMAIL = "admin@wateroncall.ca";
 
@@ -115,6 +118,13 @@ function normalizeCanadianPhone(value: unknown): string | null {
   if (digits.length === 10) return "+1" + digits;
   if (digits.length === 11 && digits.startsWith("1")) return "+" + digits;
   return null;
+}
+
+function displayCanadianPhone(value: unknown): string {
+  const normalized = normalizeCanadianPhone(value);
+  if (!normalized) return String(value ?? "");
+  const digits = normalized.slice(2);
+  return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
 }
 
 async function ensurePhoneSchema(env: Env): Promise<void> {
@@ -568,21 +578,32 @@ const ACCOUNT_SCRIPT = [
   '  const message = document.getElementById("message");',
   '  const orderList = document.getElementById("order-list");',
   '  const emptyOrders = document.getElementById("empty-orders");',
+  '  const profileForm = document.getElementById("profile-form");',
+  '  const orderForm = document.getElementById("order-form");',
   '  const timing = document.getElementById("delivery_timing");',
   '  const dateWrap = document.getElementById("date-wrap");',
   '  const dateInput = document.getElementById("requested_date");',
+  '  const differentAddress = document.getElementById("different_address");',
+  '  const differentAddressOption = document.getElementById("different-address-option");',
+  '  const deliveryAddressFields = document.getElementById("delivery-address-fields");',
+  '  const savedAddressSummary = document.getElementById("saved-address-summary");',
+  '  const addressNames = ["address_line1", "address_line2", "city", "postal_code"];',
   '  const show = (text, error = false) => { message.textContent = text; message.hidden = false; message.className = error ? "message error" : "message success"; window.scrollTo({ top: 0, behavior: "smooth" }); };',
   '  const busy = (form, state) => { const button = form.querySelector("button[type=submit]"); button.disabled = state; button.textContent = state ? "Please wait…" : button.dataset.label; };',
   '  const updateDate = () => { const scheduled = timing.value === "scheduled"; dateWrap.hidden = !scheduled; dateInput.required = scheduled; if (!scheduled) dateInput.value = ""; };',
+  '  const restoreSavedAddress = () => { addressNames.forEach((name) => { const input = orderForm.elements.namedItem(name); if (input) input.value = input.dataset.savedValue || ""; }); };',
+  '  const updateAddressChoice = () => { const hasSaved = differentAddress.dataset.hasSaved === "1"; const showFields = !hasSaved || differentAddress.checked; deliveryAddressFields.hidden = !showFields; if (hasSaved && !differentAddress.checked) restoreSavedAddress(); };',
+  '  const syncSavedAddress = (profile) => { const values = { address_line1: profile.address_line1 || "", address_line2: profile.address_line2 || "", city: profile.city || "", postal_code: profile.postal_code || "" }; Object.entries(values).forEach(([name, value]) => { const input = orderForm.elements.namedItem(name); if (input) { input.value = value; input.defaultValue = value; input.dataset.savedValue = value; } }); savedAddressSummary.textContent = [values.address_line1, values.address_line2, values.city, profile.province || "ON", values.postal_code].filter(Boolean).join(", "); differentAddress.dataset.hasSaved = "1"; differentAddress.checked = false; differentAddressOption.hidden = false; updateAddressChoice(); };',
   '  timing.addEventListener("change", updateDate); updateDate();',
-  '  document.getElementById("profile-form").addEventListener("submit", async (event) => {',
+  '  differentAddress.addEventListener("change", updateAddressChoice); updateAddressChoice();',
+  '  profileForm.addEventListener("submit", async (event) => {',
   '    event.preventDefault(); const form = event.currentTarget; busy(form, true);',
-  '    try { const response = await fetch("/api/profile", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.fromEntries(new FormData(form))) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); show("Contact details saved."); }',
-  '    catch (error) { show(error.message || "Unable to save contact details.", true); } finally { busy(form, false); }',
+  '    try { const response = await fetch("/api/profile", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.fromEntries(new FormData(form))) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); document.getElementById("phone").value = data.phone_display || document.getElementById("phone").value; syncSavedAddress(data.profile); show("Profile saved. Your address will be used for new delivery requests."); }',
+  '    catch (error) { show(error.message || "Unable to save your profile.", true); } finally { busy(form, false); }',
   '  });',
-  '  document.getElementById("order-form").addEventListener("submit", async (event) => {',
+  '  orderForm.addEventListener("submit", async (event) => {',
   '    event.preventDefault(); const form = event.currentTarget; busy(form, true);',
-  '    try { const response = await fetch("/api/orders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.fromEntries(new FormData(form))) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); show("Delivery request submitted. We will notify you when a hauler accepts it."); form.reset(); updateDate(); await loadOrders(); }',
+  '    try { const response = await fetch("/api/orders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.fromEntries(new FormData(form))) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); show("Delivery request submitted. We will notify you when a hauler accepts it."); form.reset(); differentAddress.checked = false; updateAddressChoice(); updateDate(); await loadOrders(); }',
   '    catch (error) { show(error.message || "Unable to submit the delivery request.", true); } finally { busy(form, false); }',
   '  });',
   '  document.getElementById("logout").addEventListener("click", async () => { await fetch("/api/auth/logout", { method: "POST" }); window.location.href = "/login"; });',
@@ -602,9 +623,9 @@ const ACCOUNT_SCRIPT = [
   '      const fields = [["Delivery timing", label(order.delivery_timing)], ["Preferred date", order.requested_date || "Not specified"], ["Delivery address", address], ["Hose distance", Number(order.hose_distance_ft).toLocaleString() + " ft"], ["Notes", order.delivery_notes || "No notes provided."]];',
   '      fields.forEach(([name, value]) => { const row = document.createElement("div"); const heading = document.createElement("strong"); const text = document.createElement("span"); heading.textContent = name; text.textContent = String(value); row.append(heading, text); expanded.append(row); });',
   '      const repeat = document.createElement("button"); repeat.type = "button"; repeat.className = "repeat-button"; repeat.textContent = "Order again";',
-  '      repeat.addEventListener("click", (event) => { event.stopPropagation(); const form = document.getElementById("order-form"); const values = { order_type: order.order_type, gallons: String(order.gallons), delivery_timing: order.delivery_timing, address_line1: order.address_line1, address_line2: order.address_line2 || "", city: order.city, postal_code: order.postal_code, hose_distance_ft: String(order.hose_distance_ft), delivery_notes: order.delivery_notes || "" }; Object.entries(values).forEach(([name, value]) => { const field = form.elements.namedItem(name); if (field) field.value = value; }); dateInput.value = ""; updateDate(); form.scrollIntoView({ behavior: "smooth", block: "start" }); setTimeout(() => timing.focus(), 450); });',
+  '      repeat.addEventListener("click", (event) => { event.stopPropagation(); const values = { order_type: order.order_type, gallons: String(order.gallons), delivery_timing: order.delivery_timing, address_line1: order.address_line1, address_line2: order.address_line2 || "", city: order.city, postal_code: order.postal_code, hose_distance_ft: String(order.hose_distance_ft), delivery_notes: order.delivery_notes || "" }; Object.entries(values).forEach(([name, value]) => { const field = orderForm.elements.namedItem(name); if (field) field.value = value; }); differentAddress.checked = true; differentAddressOption.hidden = false; updateAddressChoice(); dateInput.value = ""; updateDate(); orderForm.scrollIntoView({ behavior: "smooth", block: "start" }); setTimeout(() => timing.focus(), 450); });',
   '      repeat.addEventListener("keydown", (event) => event.stopPropagation()); expanded.append(repeat);',
-  '      if (order.status === "requested" || order.status === "offered") { const cancel = document.createElement("button"); cancel.type = "button"; cancel.className = "cancel-button"; cancel.textContent = "Cancel request"; cancel.addEventListener("keydown", (event) => event.stopPropagation()); cancel.addEventListener("click", async (event) => { event.stopPropagation(); if (!window.confirm("Cancel this delivery request? This cannot be undone.")) return; cancel.disabled = true; try { const response = await fetch("/api/orders/" + encodeURIComponent(order.id) + "/cancel", { method: "POST" }); const data = await response.json(); if (!response.ok) throw new Error(data.error); show("Delivery request cancelled. Confirmation emails have been sent."); await loadOrders(); } catch (error) { show(error.message || "Unable to cancel this request.", true); cancel.disabled = false; } }); expanded.append(cancel); }',
+  '      if (order.status === "requested" || order.status === "offered") { const cancel = document.createElement("button"); cancel.type = "button"; cancel.className = "cancel-button"; cancel.textContent = "Cancel request"; cancel.addEventListener("keydown", (event) => event.stopPropagation()); cancel.addEventListener("click", async (event) => { event.stopPropagation(); if (!window.confirm("Cancel this delivery request? This cannot be undone.")) return; cancel.disabled = true; try { const response = await fetch("/api/orders/" + encodeURIComponent(order.id) + "/cancel", { method: "POST" }); const data = await response.json(); if (!response.ok) throw new Error(data.error); show("Delivery request cancelled. Your confirmation has been sent."); await loadOrders(); } catch (error) { show(error.message || "Unable to cancel this request.", true); cancel.disabled = false; } }); expanded.append(cancel); }',
   '      const toggle = () => { const open = expanded.hidden; expanded.hidden = !open; item.setAttribute("aria-expanded", String(open)); hint.textContent = open ? "Hide request details" : "View request details"; };',
   '      item.addEventListener("click", toggle); item.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggle(); } });',
   '      top.append(title, status); item.append(top, summary, hint, expanded); orderList.append(item);',
@@ -628,7 +649,13 @@ function accountJavascript(): Response {
   });
 }
 
-function accountPage(user: AccountUserRow, phoneVerified: boolean): Response {
+function accountPage(user: AccountUserRow, phoneVerified: boolean, profile: CustomerProfileRow | null): Response {
+  const notificationPreference = profile?.notification_preference ?? "email";
+  const hasSavedAddress = Boolean(profile?.address_line1 && profile?.city && profile?.postal_code);
+  const savedAddress = hasSavedAddress
+    ? [profile?.address_line1, profile?.address_line2, profile?.city, profile?.province || "ON", profile?.postal_code].filter(Boolean).join(", ")
+    : "No default delivery address saved yet.";
+  const checked = (value: NotificationPreference): string => notificationPreference === value ? " checked" : "";
   const html = [
     '<!doctype html><html lang="en"><head>',
     '<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0877f9">',
@@ -641,18 +668,24 @@ function accountPage(user: AccountUserRow, phoneVerified: boolean): Response {
     'main{max-width:1120px;margin:auto;padding:38px 20px 70px}.welcome{display:flex;justify-content:space-between;align-items:end;gap:20px;margin-bottom:28px}.eyebrow{text-transform:uppercase;letter-spacing:.14em;color:var(--blue);font-size:12px;font-weight:850}h1{font-size:clamp(32px,5vw,52px);letter-spacing:-.04em;color:var(--navy);margin:8px 0 4px}p{color:var(--muted);line-height:1.5;margin:0}',
     '.message{padding:14px 16px;border-radius:12px;margin:0 0 22px;font-weight:650}.message.success{background:#e4f8ef;color:var(--green)}.message.error{background:#ffebeb;color:var(--red)}',
     '.grid{display:grid;grid-template-columns:.85fr 1.15fr;gap:22px;align-items:start}.stack{display:grid;gap:22px}.card{background:#fff;border:1px solid var(--line);border-radius:19px;padding:25px;box-shadow:0 12px 35px #06325e0d}.card h2{margin:0 0 6px;color:var(--navy);font-size:22px}.intro{margin-bottom:21px;font-size:14px}',
-    '.fields{display:grid;grid-template-columns:1fr 1fr;gap:16px}.field.full{grid-column:1/-1}label{display:block;font-size:13px;font-weight:750;margin-bottom:7px}input,select,textarea{width:100%;border:1px solid #bdd0e1;border-radius:11px;background:#fff;color:var(--ink);font:inherit;padding:12px}input,select{height:48px}textarea{min-height:94px;resize:vertical}input:focus,select:focus,textarea:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px #0877f91a}',
+    '.fields{display:grid;grid-template-columns:1fr 1fr;gap:16px}.field.full{grid-column:1/-1}label,.field-label{display:block;font-size:13px;font-weight:750;margin-bottom:7px}input,select,textarea{width:100%;border:1px solid #bdd0e1;border-radius:11px;background:#fff;color:var(--ink);font:inherit;padding:12px}input,select{height:48px}textarea{min-height:94px;resize:vertical}input:focus,select:focus,textarea:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px #0877f91a}.helper{display:block;color:var(--muted);font-size:12px;margin-top:6px}.notification-options{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.notification-choice{display:flex;align-items:center;justify-content:center;gap:8px;border:1px solid #bdd0e1;border-radius:11px;padding:11px;cursor:pointer;margin:0}.notification-choice:has(input:checked){border-color:var(--blue);background:#eef7ff;color:var(--navy)}.notification-choice input,.different-address input{width:auto;height:auto;margin:0;padding:0;box-shadow:none}.saved-address{padding:14px;border:1px solid var(--line);border-radius:12px;background:var(--wash)}.saved-address strong{display:block;color:var(--navy);font-size:13px}.saved-address span{display:block;color:var(--muted);font-size:13px;margin-top:5px}.different-address{display:flex;align-items:center;gap:9px;margin:12px 0 0;font-size:13px}.address-fields{padding-top:2px}',
     'button{height:49px;width:100%;border:0;border-radius:11px;background:var(--blue);color:#fff;font-size:15px;font-weight:800;cursor:pointer;margin-top:17px}button:disabled{opacity:.6;cursor:not-allowed}.fine{font-size:12px;margin-top:10px}.order-list{display:grid;gap:11px}.order-item{border:1px solid var(--line);border-radius:12px;padding:14px;cursor:pointer}.order-item:hover,.order-item:focus{border-color:var(--blue);outline:none;box-shadow:0 0 0 3px #0877f914}.order-top{display:flex;justify-content:space-between;gap:10px}.order-item p{font-size:13px;margin-top:5px}.view-hint{display:inline-block;margin-top:8px;color:var(--blue);font-size:12px;font-weight:750}.order-details{border-top:1px solid var(--line);margin-top:12px;padding-top:12px;cursor:default}.order-details div{display:grid;grid-template-columns:125px 1fr;gap:10px;padding:6px 0;font-size:13px}.order-details strong{color:var(--navy)}.order-details span{color:var(--muted);overflow-wrap:anywhere}.repeat-button,.cancel-button{width:auto;height:42px;margin:12px 9px 0 0;padding:0 18px}.repeat-button{background:#eaf4ff;color:var(--navy)}.repeat-button:hover{background:#dbeeff}.cancel-button{background:#fff0f0;color:var(--red);border:1px solid #f2caca}.cancel-button:hover{background:#ffe4e4}.phone-verification{border-top:1px solid var(--line);margin-top:20px;padding-top:18px}.phone-verification p{font-size:13px}.phone-verification button{background:#eaf4ff;color:var(--navy);margin-top:12px}.phone-verification form{margin-top:12px}.phone-verification form button{background:var(--blue);color:#fff}.cancel-button:hover{background:#ffe4e4}.status{background:#eaf4ff;color:var(--navy);border-radius:999px;padding:5px 9px;font-size:11px;font-weight:800;white-space:nowrap}.empty{padding:18px;border:1px dashed #bdd0e1;border-radius:12px;text-align:center;font-size:14px}',
-    '@media(max-width:800px){.grid{grid-template-columns:1fr}.welcome{align-items:start}.account span{display:none}}@media(max-width:560px){header{padding:14px 16px}main{padding:28px 15px 55px}.fields{grid-template-columns:1fr}.field.full{grid-column:auto}.card{padding:20px}.order-top{align-items:start;flex-direction:column}}',
+    '@media(max-width:800px){.grid{grid-template-columns:1fr}.welcome{align-items:start}.account span{display:none}}@media(max-width:560px){header{padding:14px 16px}main{padding:28px 15px 55px}.fields,.notification-options{grid-template-columns:1fr}.field.full{grid-column:auto}.card{padding:20px}.order-top{align-items:start;flex-direction:column}}',
     '</style></head><body>',
     '<header><div class="brand"><span>Water</span> OnCall</div><div class="account"><a href="/hauler" class="hauler-link">Hauler application</a><span>' + escapeHtml(user.email) + '</span><button id="logout" class="link-button" type="button">Sign out</button></div></header>',
     '<main><div class="welcome"><div><div class="eyebrow">Customer portal</div><h1>My Water OnCall</h1><p>Request water and follow every delivery in one place.</p></div></div>',
     '<div id="message" class="message" aria-live="polite" hidden></div>',
     '<div class="grid"><div class="stack">',
-    '<section class="card"><h2>Contact details</h2><p class="intro">We use this information to coordinate your delivery.</p>',
+    '<section class="card"><h2>Customer profile</h2><p class="intro">Save your contact and default delivery information once.</p>',
     '<form id="profile-form"><div class="fields"><div class="field full"><label for="full_name">Full name</label><input id="full_name" name="full_name" autocomplete="name" maxlength="100" value="' + escapeHtml(user.full_name) + '" required></div>',
-    '<div class="field"><label for="phone">Mobile phone</label><input id="phone" name="phone" type="tel" autocomplete="tel" maxlength="30" value="' + escapeHtml(user.phone) + '" required></div>',
-    '<div class="field"><label>Email address</label><input value="' + escapeHtml(user.email) + '" disabled></div></div><button type="submit" data-label="Save contact details">Save contact details</button></form><div class="phone-verification"><p>Verify your saved mobile number once to enable faster text-message sign-in.</p><button id="phone-verify-start" type="button">' + (phoneVerified ? 'Reverify or change mobile' : 'Verify mobile for text sign-in') + '</button><form id="phone-verify-form" hidden><label for="phone_code">6-digit text-message code</label><input id="phone_code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="000000" required><button type="submit">Verify mobile</button></form></div></section>',
+    '<div class="field"><label>Email address</label><input value="' + escapeHtml(user.email) + '" disabled></div>',
+    '<div class="field"><label for="phone">Mobile phone</label><input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel-national" maxlength="16" placeholder="(905) 555-1234" value="' + escapeHtml(displayCanadianPhone(user.phone)) + '" required><span class="helper">Enter 10 digits — you do not need to type +1.</span></div>',
+    '<div class="field full"><span class="field-label">Preferred delivery notifications</span><div class="notification-options" role="radiogroup" aria-label="Preferred delivery notifications"><label class="notification-choice"><input type="radio" name="preferred_notification" value="email"' + checked("email") + '> Email</label><label class="notification-choice"><input type="radio" name="preferred_notification" value="sms"' + checked("sms") + '> SMS</label><label class="notification-choice"><input type="radio" name="preferred_notification" value="both"' + checked("both") + '> Both</label></div></div>',
+    '<div class="field full"><label for="profile_address_line1">Default delivery address</label><input id="profile_address_line1" name="address_line1" autocomplete="street-address" maxlength="150" value="' + escapeHtml(profile?.address_line1 ?? "") + '" required></div>',
+    '<div class="field"><label for="profile_address_line2">Unit or location details</label><input id="profile_address_line2" name="address_line2" maxlength="100" placeholder="Optional" value="' + escapeHtml(profile?.address_line2 ?? "") + '"></div>',
+    '<div class="field"><label for="profile_city">City or town</label><input id="profile_city" name="city" autocomplete="address-level2" maxlength="80" value="' + escapeHtml(profile?.city ?? "") + '" required></div>',
+    '<div class="field"><label for="profile_postal_code">Postal code</label><input id="profile_postal_code" name="postal_code" autocomplete="postal-code" maxlength="7" placeholder="L0R 1B0" value="' + escapeHtml(profile?.postal_code ?? "") + '" required></div>',
+    '</div><button type="submit" data-label="Save profile">Save profile</button></form><div class="phone-verification"><p>Verify your saved mobile number once to enable SMS notifications and faster text-message sign-in.</p><button id="phone-verify-start" type="button">' + (phoneVerified ? 'Reverify or change mobile' : 'Verify mobile number') + '</button><form id="phone-verify-form" hidden><label for="phone_code">6-digit text-message code</label><input id="phone_code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="000000" required><button type="submit">Verify mobile</button></form></div></section>',
     '<section class="card"><h2>My requests</h2><p class="intro">Your newest delivery requests appear first.</p><div id="empty-orders" class="empty">No delivery requests yet.</div><div id="order-list" class="order-list"></div></section>',
     '</div><section class="card"><div class="eyebrow">New delivery</div><h2>Request bulk water</h2><p class="intro">Tell us what you need. Pricing and the delivery window will be confirmed before dispatch.</p>',
     '<form id="order-form"><div class="fields">',
@@ -660,10 +693,11 @@ function accountPage(user: AccountUserRow, phoneVerified: boolean): Response {
     '<div class="field"><label for="gallons">Amount required</label><select id="gallons" name="gallons" required><option value="2000">Up to 2,000 gallons</option><option value="2500">2,500 gallons</option><option value="3000">3,000 gallons</option></select></div>',
     '<div class="field"><label for="delivery_timing">When do you need it?</label><select id="delivery_timing" name="delivery_timing" required><option value="flexible">Next 1–2 days</option><option value="scheduled">Choose a date</option><option value="urgent">Urgent refill</option></select></div>',
     '<div id="date-wrap" class="field" hidden><label for="requested_date">Preferred date</label><input id="requested_date" name="requested_date" type="date"></div>',
-    '<div class="field full"><label for="address_line1">Delivery address</label><input id="address_line1" name="address_line1" autocomplete="street-address" maxlength="150" required></div>',
-    '<div class="field"><label for="address_line2">Unit or location details</label><input id="address_line2" name="address_line2" maxlength="100" placeholder="Optional"></div>',
-    '<div class="field"><label for="city">City or town</label><input id="city" name="city" autocomplete="address-level2" maxlength="80" required></div>',
-    '<div class="field"><label for="postal_code">Postal code</label><input id="postal_code" name="postal_code" autocomplete="postal-code" maxlength="7" placeholder="L0R 1B0" required></div>',
+    '<div class="field full saved-address"><strong>Delivery address</strong><span id="saved-address-summary">' + escapeHtml(savedAddress) + '</span><label id="different-address-option" class="different-address"' + (hasSavedAddress ? '' : ' hidden') + '><input id="different_address" type="checkbox" data-has-saved="' + (hasSavedAddress ? '1' : '0') + '"> Deliver to a different address for this order</label></div>',
+    '<div id="delivery-address-fields" class="field full address-fields"' + (hasSavedAddress ? ' hidden' : '') + '><div class="fields"><div class="field full"><label for="address_line1">Delivery address</label><input id="address_line1" name="address_line1" autocomplete="street-address" maxlength="150" value="' + escapeHtml(profile?.address_line1 ?? "") + '" data-saved-value="' + escapeHtml(profile?.address_line1 ?? "") + '" required></div>',
+    '<div class="field"><label for="address_line2">Unit or location details</label><input id="address_line2" name="address_line2" maxlength="100" placeholder="Optional" value="' + escapeHtml(profile?.address_line2 ?? "") + '" data-saved-value="' + escapeHtml(profile?.address_line2 ?? "") + '"></div>',
+    '<div class="field"><label for="city">City or town</label><input id="city" name="city" autocomplete="address-level2" maxlength="80" value="' + escapeHtml(profile?.city ?? "") + '" data-saved-value="' + escapeHtml(profile?.city ?? "") + '" required></div>',
+    '<div class="field"><label for="postal_code">Postal code</label><input id="postal_code" name="postal_code" autocomplete="postal-code" maxlength="7" placeholder="L0R 1B0" value="' + escapeHtml(profile?.postal_code ?? "") + '" data-saved-value="' + escapeHtml(profile?.postal_code ?? "") + '" required></div></div></div>',
     '<div class="field"><label for="hose_distance_ft">Hose distance</label><select id="hose_distance_ft" name="hose_distance_ft"><option value="50">Up to 50 ft included</option><option value="100">Up to 100 ft</option><option value="150">Up to 150 ft</option><option value="200">Up to 200 ft</option><option value="250">More than 200 ft</option></select></div>',
     '<div class="field full"><label for="delivery_notes">Delivery notes</label><textarea id="delivery_notes" name="delivery_notes" maxlength="1000" placeholder="Cistern location, access instructions, gate or door codes, or anything the driver should know."></textarea></div>',
     '</div><button type="submit" data-label="Submit delivery request">Submit delivery request</button><p class="fine">Submitting this form requests service; it does not charge your card.</p></form></section></div></main>',
@@ -956,16 +990,40 @@ async function saveProfile(request: Request, env: Env): Promise<Response> {
   const body = await readBody(request);
   const fullName = textField(body?.full_name, 100);
   const phone = normalizeCanadianPhone(body?.phone);
+  const notificationPreference = String(body?.preferred_notification ?? "email") as NotificationPreference;
+  const address1 = textField(body?.address_line1, 150);
+  const address2 = textField(body?.address_line2, 100, false) || null;
+  const city = textField(body?.city, 80);
+  const postalCode = String(body?.postal_code ?? "").trim().toUpperCase().replace(/\s+/g, "");
   if (!fullName || !phone) {
     return json({ error: "Enter your full name and a valid Canadian mobile number." }, 400);
   }
-  await ensurePhoneSchema(env);
-  await env.DB.prepare(
-    "UPDATE users SET full_name = ?, phone = ?, updated_at = datetime('now') WHERE id = ?"
-  ).bind(fullName, phone, user.id).run();
+  if (!["email", "sms", "both"].includes(notificationPreference)) {
+    return json({ error: "Choose Email, SMS, or Both for delivery notifications." }, 400);
+  }
+  if (!address1 || !city || !/^[A-Z]\d[A-Z]\d[A-Z]\d$/.test(postalCode)) {
+    return json({ error: "Enter a complete Ontario delivery address and valid postal code." }, 400);
+  }
+  await Promise.all([ensurePhoneSchema(env), ensureCustomerProfileSchema(env)]);
+  await env.DB.batch([
+    env.DB.prepare("UPDATE users SET full_name = ?, phone = ?, updated_at = datetime('now') WHERE id = ?").bind(fullName, phone, user.id),
+    env.DB.prepare(`INSERT INTO customer_profiles (user_id, notification_preference, address_line1, address_line2, city, province, postal_code)
+      VALUES (?, ?, ?, ?, ?, 'ON', ?)
+      ON CONFLICT(user_id) DO UPDATE SET notification_preference=excluded.notification_preference,address_line1=excluded.address_line1,address_line2=excluded.address_line2,city=excluded.city,province='ON',postal_code=excluded.postal_code,updated_at=datetime('now')`)
+      .bind(user.id, notificationPreference, address1, address2, city, postalCode),
+  ]);
   await env.DB.prepare("DELETE FROM verified_phones WHERE user_id=? AND phone<>?").bind(user.id, phone).run();
-  const adminSynced = await syncLaravelProfile({ profile_type: "customer", external_user_id: user.id, email: user.email, name: fullName, phone_e164: phone, preferred_channel: "email" });
-  return json({ ok: true, admin_synced: adminSynced });
+  const adminSynced = await syncLaravelProfile({
+    profile_type: "customer", external_user_id: user.id, email: user.email, name: fullName,
+    phone_e164: phone, preferred_channel: notificationPreference,
+    address_line1: address1, address_line2: address2, city, province: "Ontario", postal_code: postalCode,
+  });
+  return json({
+    ok: true,
+    admin_synced: adminSynced,
+    phone_display: displayCanadianPhone(phone),
+    profile: { notification_preference: notificationPreference, address_line1: address1, address_line2: address2, city, province: "ON", postal_code: postalCode },
+  });
 }
 
 async function listOrders(request: Request, env: Env): Promise<Response> {
@@ -1018,7 +1076,7 @@ async function sendOrderEmail(env: Env, to: string, subject: string, text: strin
   }
 }
 
-async function sendOrderEmails(env: Env, user: AccountUserRow, order: OrderEmailDetails): Promise<void> {
+async function sendOrderNotifications(env: Env, user: AccountUserRow, order: OrderEmailDetails, notificationPreference: NotificationPreference): Promise<void> {
   const address = [order.address1, order.address2, order.city, "ON", order.postalCode].filter(Boolean).join(", ");
   const preferredDate = order.requestedDate || "Not specified";
   const notes = order.notes || "No notes provided.";
@@ -1054,10 +1112,23 @@ async function sendOrderEmails(env: Env, user: AccountUserRow, order: OrderEmail
     common,
   ].join("\n");
 
-  await Promise.all([
-    sendOrderEmail(env, user.email, "Water OnCall request received — " + amount, customerText),
+  const sends: Promise<unknown>[] = [
     sendOrderEmail(env, "info@wateroncall.ca", "New Water OnCall request — " + amount + " in " + order.city, adminText),
-  ]);
+  ];
+  if (wantsEmail(notificationPreference)) {
+    sends.push(sendOrderEmail(env, user.email, "Water OnCall request received — " + amount, customerText));
+  }
+  if (user.phone && wantsSms(notificationPreference)) {
+    sends.push(sendNotification(env, {
+      eventType: "order.requested.customer_notification",
+      channel: "sms",
+      recipient: user.phone,
+      text: "Water OnCall: We received your request for " + amount + " in " + order.city + ". We will notify you when a hauler accepts it.",
+      orderId: order.id,
+      userId: user.id,
+    }));
+  }
+  await Promise.all(sends);
 }
 
 async function cancelCustomerOrder(request: Request, env: Env, orderId: string): Promise<Response> {
@@ -1078,20 +1149,36 @@ async function cancelCustomerOrder(request: Request, env: Env, orderId: string):
   ).bind(orderId, user.id).run();
 
   const description = readable(order.order_type) + " · " + Number(order.gallons).toLocaleString() + " gallons";
-  await Promise.all([
-    sendOrderEmail(
-      env,
-      user.email,
-      "Water OnCall cancellation confirmed",
-      ["Hello " + (user.full_name || "there") + ",", "", "Your delivery request has been cancelled.", "", "Order: " + description, "Location: " + order.city, "Request ID: " + order.id, "", "No payment has been taken for this request."].join("\n")
-    ),
+  await ensureCustomerProfileSchema(env);
+  const customerProfile = await env.DB.prepare("SELECT notification_preference FROM customer_profiles WHERE user_id=? LIMIT 1").bind(user.id).first<{ notification_preference: NotificationPreference }>();
+  const notificationPreference = customerProfile?.notification_preference ?? "email";
+  const sends: Promise<unknown>[] = [
     sendOrderEmail(
       env,
       "info@wateroncall.ca",
       "Water OnCall request cancelled — " + description,
       ["A customer cancelled a delivery request before acceptance.", "", "Customer: " + (user.full_name || "Not provided"), "Email: " + user.email, "Phone: " + (user.phone || "Not provided"), "Order: " + description, "Location: " + order.city, "Request ID: " + order.id].join("\n")
     ),
-  ]);
+  ];
+  if (wantsEmail(notificationPreference)) {
+    sends.push(sendOrderEmail(
+      env,
+      user.email,
+      "Water OnCall cancellation confirmed",
+      ["Hello " + (user.full_name || "there") + ",", "", "Your delivery request has been cancelled.", "", "Order: " + description, "Location: " + order.city, "Request ID: " + order.id, "", "No payment has been taken for this request."].join("\n")
+    ));
+  }
+  if (user.phone && wantsSms(notificationPreference)) {
+    sends.push(sendNotification(env, {
+      eventType: "order.cancelled.customer_notification",
+      channel: "sms",
+      recipient: user.phone,
+      text: "Water OnCall: Your " + description + " request in " + order.city + " has been cancelled. No payment was taken.",
+      orderId: order.id,
+      userId: user.id,
+    }));
+  }
+  await Promise.all(sends);
   return json({ ok: true, order: { id: order.id, status: "cancelled" } });
 }
 
@@ -1102,6 +1189,9 @@ async function createOrder(request: Request, env: Env): Promise<Response> {
   if (!user.full_name || !user.phone) {
     return json({ error: "Save your contact name and mobile phone before requesting delivery." }, 400);
   }
+  await ensureCustomerProfileSchema(env);
+  const customerProfile = await env.DB.prepare("SELECT notification_preference FROM customer_profiles WHERE user_id=? LIMIT 1").bind(user.id).first<{ notification_preference: NotificationPreference }>();
+  const notificationPreference = customerProfile?.notification_preference ?? "email";
 
   const body = await readBody(request);
   if (!body) return json({ error: "The delivery request was incomplete." }, 400);
@@ -1163,9 +1253,9 @@ async function createOrder(request: Request, env: Env): Promise<Response> {
     delivery_notes: notes, hose_distance_feet: hoseDistance,
   });
 
-  await sendOrderEmails(env, user, {
+  await sendOrderNotifications(env, user, {
     id, orderType, deliveryTiming, requestedDate, gallons, address1, address2, city, postalCode, hoseDistance, notes,
-  });
+  }, notificationPreference);
 
   return json({ ok: true, admin_synced: adminSynced, order: { id, status: "requested" } }, 201);
 }
@@ -1227,9 +1317,12 @@ export default {
     if (url.pathname === "/account") {
       const user = await sessionUser(request, env);
       if (!user) return Response.redirect(url.origin + "/login", 302);
-      await ensurePhoneSchema(env);
-      const verified = await env.DB.prepare("SELECT user_id FROM verified_phones WHERE user_id=? LIMIT 1").bind(user.id).first();
-      return accountPage(user, Boolean(verified));
+      await Promise.all([ensurePhoneSchema(env), ensureCustomerProfileSchema(env)]);
+      const [verified, profile] = await Promise.all([
+        env.DB.prepare("SELECT user_id FROM verified_phones WHERE user_id=? LIMIT 1").bind(user.id).first(),
+        env.DB.prepare("SELECT user_id,notification_preference,address_line1,address_line2,city,province,postal_code FROM customer_profiles WHERE user_id=? LIMIT 1").bind(user.id).first<CustomerProfileRow>(),
+      ]);
+      return accountPage(user, Boolean(verified), profile);
     }
 
     if (url.pathname === "/" || url.pathname === "/login") {

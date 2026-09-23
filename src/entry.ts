@@ -1,4 +1,6 @@
 import app from "./index";
+import { ensureCustomerProfileSchema, wantsEmail, wantsSms } from "./customer_profile";
+import { sendNotification } from "./notifications";
 
 const PHONE_SCRIPT = `document.addEventListener("DOMContentLoaded", () => {
   const start = document.getElementById("hauler-phone-verify-start");
@@ -362,11 +364,13 @@ async function marketplaceDecision(request: Request, env: any, orderId: string, 
   const hauler = await sessionHauler(request, env);
   if (!hauler) return json({ error: "Please sign in again." }, 401);
   if (hauler.status !== "approved") return json({ error: "Hauler approval is required." }, 403);
-  await ensureMarketplaceSchema(env);
+  await Promise.all([ensureMarketplaceSchema(env), ensureCustomerProfileSchema(env)]);
 
   const order = await env.DB.prepare(
-    `SELECT o.*,u.email AS customer_email,u.full_name AS customer_name,u.phone AS customer_phone
+    `SELECT o.*,u.email AS customer_email,u.full_name AS customer_name,u.phone AS customer_phone,
+            COALESCE(cp.notification_preference,'email') AS notification_preference
        FROM orders o JOIN users u ON u.id=o.customer_id
+       LEFT JOIN customer_profiles cp ON cp.user_id=u.id
       WHERE o.id=? LIMIT 1`
   ).bind(orderId).first();
   if (!order) return json({ error: "That delivery request no longer exists." }, 404);
@@ -401,7 +405,7 @@ async function marketplaceDecision(request: Request, env: any, orderId: string, 
     "UPDATE order_offers SET status=CASE WHEN hauler_id=? THEN 'accepted' ELSE 'expired' END, responded_at=datetime('now') WHERE order_id=?"
   ).bind(hauler.id, orderId).run();
 
-  if (env.RESEND_API_KEY) {
+  {
     const delivery = [order.address_line1, order.city, order.province].filter(Boolean).join(", ");
     const customerText = [
       "Your Water OnCall delivery request has been accepted.",
@@ -422,18 +426,33 @@ async function marketplaceDecision(request: Request, env: any, orderId: string, 
       "Address: " + [order.address_line1, order.address_line2, order.city, order.province, order.postal_code].filter(Boolean).join(", "),
       "Notes: " + (order.delivery_notes || "None")
     ].join("\n");
-    await Promise.allSettled([
-      fetch("https://api.resend.com/emails", {
+    const notifications: Promise<unknown>[] = [];
+    if (env.RESEND_API_KEY && order.customer_email && wantsEmail(order.notification_preference)) {
+      notifications.push(fetch("https://api.resend.com/emails", {
         method: "POST",
         headers: { "Authorization": "Bearer " + env.RESEND_API_KEY, "Content-Type": "application/json" },
         body: JSON.stringify({ from: "Water OnCall <updates@notify.wateroncall.ca>", to: [order.customer_email], subject: "Your Water OnCall delivery was accepted", text: customerText })
-      }),
-      fetch("https://api.resend.com/emails", {
+      }));
+    }
+    if (env.RESEND_API_KEY && hauler.email) {
+      notifications.push(fetch("https://api.resend.com/emails", {
         method: "POST",
         headers: { "Authorization": "Bearer " + env.RESEND_API_KEY, "Content-Type": "application/json" },
         body: JSON.stringify({ from: "Water OnCall <updates@notify.wateroncall.ca>", to: [hauler.email], subject: "Delivery accepted — Water OnCall", text: haulerText })
-      })
-    ]);
+      }));
+    }
+    if (order.customer_phone && wantsSms(order.notification_preference)) {
+      notifications.push(sendNotification(env, {
+        eventType: "order.accepted.customer_notification",
+        channel: "sms",
+        recipient: order.customer_phone,
+        text: "Water OnCall: Your " + Number(order.gallons).toLocaleString() + " gallon request has been accepted by " + (hauler.business_name || "an approved hauler") + ". Sign in for details.",
+        orderId,
+        userId: order.customer_id,
+        metadata: { hauler_id: hauler.id, status: "accepted" },
+      }));
+    }
+    await Promise.allSettled(notifications);
   }
 
   return json({ ok: true, status: "accepted" });

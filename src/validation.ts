@@ -17,11 +17,11 @@ function canadianPhone(value: unknown): { e164: string; display: string } | null
   let digits = String(value ?? "").replace(/\D/g, "");
   if (digits.length === 11 && digits.startsWith("1")) digits = digits.slice(1);
   if (digits.length !== 10 || digits[0] === "0" || digits[0] === "1" || digits[3] === "0" || digits[3] === "1") return null;
-  return { e164: "+1" + digits, display: "+1 " + digits.slice(0,3) + "-" + digits.slice(3,6) + "-" + digits.slice(6) };
+  return { e164: "+1" + digits, display: "(" + digits.slice(0,3) + ") " + digits.slice(3,6) + "-" + digits.slice(6) };
 }
 
 function validationScript(): Response {
-  const js = `document.addEventListener("DOMContentLoaded",()=>{const emailInputs=[...document.querySelectorAll('input[type="email"]')];const phoneInputs=[...document.querySelectorAll('input[type="tel"]')];const emailOk=v=>/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(v.trim())&&v.trim().length<=254;const phone=v=>{let d=v.replace(/\\D/g,'');if(d.length===11&&d[0]==='1')d=d.slice(1);if(d.length!==10||['0','1'].includes(d[0])||['0','1'].includes(d[3]))return null;return '+1 '+d.slice(0,3)+'-'+d.slice(3,6)+'-'+d.slice(6)};emailInputs.forEach(i=>{i.addEventListener('blur',()=>{i.setCustomValidity(emailOk(i.value)?'':'Enter a valid email address, for example name@example.com.');if(i.value)i.reportValidity()})});phoneInputs.forEach(i=>{i.placeholder=i.placeholder||'905-555-1234';i.addEventListener('blur',()=>{const f=phone(i.value);i.setCustomValidity(f?'':'Enter a valid 10-digit Canadian mobile number.');if(f)i.value=f;else if(i.value)i.reportValidity()})})});`;
+  const js = `document.addEventListener("DOMContentLoaded",()=>{const emailInputs=[...document.querySelectorAll('input[type="email"]')];const phoneInputs=[...document.querySelectorAll('input[type="tel"]')];const emailOk=v=>/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(v.trim())&&v.trim().length<=254;const phone=v=>{let d=v.replace(/\\D/g,'');if(d.length===11&&d[0]==='1')d=d.slice(1);if(d.length!==10||['0','1'].includes(d[0])||['0','1'].includes(d[3]))return null;return '('+d.slice(0,3)+') '+d.slice(3,6)+'-'+d.slice(6)};emailInputs.forEach(i=>{i.addEventListener('blur',()=>{i.setCustomValidity(emailOk(i.value)?'':'Enter a valid email address, for example name@example.com.');if(i.value)i.reportValidity()})});phoneInputs.forEach(i=>{i.placeholder=i.placeholder||'(905) 555-1234';i.addEventListener('blur',()=>{const f=phone(i.value);i.setCustomValidity(f?'':'Enter a valid 10-digit Canadian mobile number.');if(f)i.value=f;else if(i.value)i.reportValidity()})})});`;
   return new Response(js, { headers: { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store" } });
 }
 

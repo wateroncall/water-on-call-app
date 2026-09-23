@@ -55,6 +55,19 @@ CREATE INDEX IF NOT EXISTS idx_login_codes_email_created ON login_codes(email, c
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_orders_customer_created ON orders(customer_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS customer_profiles (
+  user_id TEXT PRIMARY KEY,
+  notification_preference TEXT NOT NULL DEFAULT 'email' CHECK (notification_preference IN ('email','sms','both')),
+  address_line1 TEXT,
+  address_line2 TEXT,
+  city TEXT,
+  province TEXT NOT NULL DEFAULT 'ON',
+  postal_code TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS hauler_profiles (
   user_id TEXT PRIMARY KEY,
   business_name TEXT NOT NULL,

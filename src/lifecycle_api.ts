@@ -1,6 +1,7 @@
 import app from "./admin_notifications";
 import { transitionOrder } from "./order_lifecycle";
 import { sendNotification } from "./notifications";
+import { ensureCustomerProfileSchema, wantsEmail, wantsSms } from "./customer_profile";
 
 function json(data:unknown,status=200){return new Response(JSON.stringify(data),{status,headers:{"Content-Type":"application/json; charset=utf-8","Cache-Control":"no-store"}})}
 function cookie(req:Request,n:string){for(const p of (req.headers.get("Cookie")||"").split(";")){const [k,...v]=p.trim().split("=");if(k===n)return decodeURIComponent(v.join("="))}return null}
@@ -18,11 +19,12 @@ async function driverTransition(req:Request,env:any,orderId:string){
  if(!["en_route","delivered","completed"].includes(next))return json({error:"Invalid status."},400);
  const result=await transitionOrder(env,{orderId,toStatus:next,actorUserId:u.id,actorRole:"driver",eventType:"driver_status_changed",details:{hauler_id:driver.hauler_id}});
  if(!result.ok)return json({error:result.error},409);
- const order=await env.DB.prepare(`SELECT o.id,o.customer_id,o.gallons,cu.email,cu.phone,hp.business_name FROM orders o JOIN users cu ON cu.id=o.customer_id LEFT JOIN hauler_profiles hp ON hp.user_id=? WHERE o.id=? LIMIT 1`).bind(driver.hauler_id,orderId).first<any>();
+ await ensureCustomerProfileSchema(env);
+ const order=await env.DB.prepare(`SELECT o.id,o.customer_id,o.gallons,cu.email,cu.phone,COALESCE(cp.notification_preference,'email') AS notification_preference,hp.business_name FROM orders o JOIN users cu ON cu.id=o.customer_id LEFT JOIN customer_profiles cp ON cp.user_id=cu.id LEFT JOIN hauler_profiles hp ON hp.user_id=? WHERE o.id=? LIMIT 1`).bind(driver.hauler_id,orderId).first<any>();
  const label=next==="en_route"?"En Route":next==="delivered"?"Delivered":"Completed";
  const text=`Water OnCall: Your ${Number(order?.gallons||0).toLocaleString()} gallon delivery with ${String(order?.business_name||"your hauler")} is now ${label}. Sign in for details.`;
- if(order?.email)await sendNotification(env,{eventType:`order.${next}.customer_notification`,channel:"email",recipient:order.email,subject:`Water OnCall delivery update — ${label}`,html:`<div style="font-family:Arial,sans-serif;color:#13283d"><h2>Your Water OnCall delivery is ${label}</h2><p>${text}</p></div>`,orderId,userId:order.customer_id,metadata:{hauler_id:driver.hauler_id,status:next}});
- if(order?.phone)await sendNotification(env,{eventType:`order.${next}.customer_notification`,channel:"sms",recipient:order.phone,text,orderId,userId:order.customer_id,metadata:{hauler_id:driver.hauler_id,status:next}});
+ if(order?.email&&wantsEmail(order.notification_preference))await sendNotification(env,{eventType:`order.${next}.customer_notification`,channel:"email",recipient:order.email,subject:`Water OnCall delivery update — ${label}`,html:`<div style="font-family:Arial,sans-serif;color:#13283d"><h2>Your Water OnCall delivery is ${label}</h2><p>${text}</p></div>`,orderId,userId:order.customer_id,metadata:{hauler_id:driver.hauler_id,status:next}});
+ if(order?.phone&&wantsSms(order.notification_preference))await sendNotification(env,{eventType:`order.${next}.customer_notification`,channel:"sms",recipient:order.phone,text,orderId,userId:order.customer_id,metadata:{hauler_id:driver.hauler_id,status:next}});
  return json({ok:true,status:result.toStatus});
 }
 
